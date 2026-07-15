@@ -1,0 +1,49 @@
+# All thresholds live here. Nothing safety-relevant is hardcoded in the logic.
+simulate: false
+log_path: session.jsonl
+
+safety:
+  ambient_max_c: 32.0            # HARD ceiling -> latched lockout
+  body_max_c: 38.5
+  lockout_release_hysteresis_c: 1.0
+  all_sensors_stale_s: 60.0
+  max_continuous_on_s: 900.0     # sticky latch; needs operator reset
+  watchdog_timeout_s: 30.0
+
+control:
+  body_setpoint_c: 36.5
+  body_deadband_c: 0.3
+  ambient_setpoint_c: 28.0       # the "second control" ceiling
+  ambient_deadband_c: 0.5
+  loop_period_s: 5.0
+  min_on_s: 30.0
+  min_off_s: 30.0
+
+sensors:
+  body_valid_range: [30.0, 43.0]
+  ambient_valid_range: [5.0, 60.0]
+  body_stale_after_s: 30.0
+  ambient_stale_after_s: 300.0   # SNZB-02 reports slowly. This is why it is
+                                 # a fallback, not the primary safety layer.
+
+zigbee:
+  device: /dev/ttyACM0
+  baudrate: 115200
+  flow_control: null             # try "software" if the dongle won't start
+  database: zigbee.db
+  plug_ieee: ""                  # fill from pair.py
+  plug_endpoint: 1
+  sensor_ieee: ""
+  sensor_endpoint: 1
+
+rfid:
+  enabled: false                 # flip on once the UID adapter is wired
+  port: /dev/ttyUSB0
+  baudrate: 9600
+  transponder_id: ""
+
+esp32:
+  enabled: false
+  port: /dev/ttyUSB1
+  baudrate: 115200
+  role: ambient

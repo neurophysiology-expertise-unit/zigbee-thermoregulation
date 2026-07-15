@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Zigbee network state — device-specific, do not commit
+zigbee.db
+zigbee.db-*
+
+# Session data
+*.jsonl
+session*.log
+
+# Local config with real IEEE addresses / ports
+config.local.yaml
+
+.vscode/
+.idea/
+.DS_Store

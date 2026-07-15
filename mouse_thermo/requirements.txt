@@ -1,0 +1,5 @@
+zigpy>=0.63
+bellows>=0.38        # ZBDongle-E (EFR32/EZSP). Use zigpy-znp for ZBDongle-P.
+pyserial>=3.5
+PyYAML>=6.0
+pytest>=7.0
