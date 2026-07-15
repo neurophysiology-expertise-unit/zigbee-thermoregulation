@@ -85,7 +85,7 @@ class Config:
     log_path: str = "session.jsonl"
     simulate: bool = False
 
-    def validate(self) -> None:
+    def validate(self, *, require_plug_ieee: bool = True) -> None:
         """Crash loudly on incoherent config rather than run unsafely."""
         c, s, sen = self.control, self.safety, self.sensors
 
@@ -107,11 +107,13 @@ class Config:
             raise ValueError("body_setpoint_c outside body_valid_range")
         if s.watchdog_timeout_s <= c.loop_period_s:
             raise ValueError("watchdog_timeout_s must exceed loop_period_s")
-        if not self.simulate and not self.zigbee.plug_ieee:
+        if require_plug_ieee and not self.simulate and not self.zigbee.plug_ieee:
             raise ValueError("zigbee.plug_ieee required when not simulating")
 
     @classmethod
-    def load(cls, path: str, *, simulate: bool | None = None) -> "Config":
+    def load(
+        cls, path: str, *, simulate: bool | None = None, require_plug_ieee: bool = True
+    ) -> "Config":
         with open(path) as f:
             raw = yaml.safe_load(f) or {}
 
@@ -138,7 +140,7 @@ class Config:
         cfg.sensors.ambient_valid_range = tuple(cfg.sensors.ambient_valid_range)
         if simulate:
             cfg.simulate = True
-        cfg.validate()
+        cfg.validate(require_plug_ieee=require_plug_ieee)
         return cfg
 
     def to_dict(self) -> dict:

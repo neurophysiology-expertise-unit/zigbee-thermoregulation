@@ -40,7 +40,10 @@ async def start_app(cfg: ZigbeeConfig) -> ControllerApplication:
         "database_path": cfg.database,
     }
     App = bellows.zigbee.application.ControllerApplication
-    app = await App.new(App.SCHEMA(app_cfg), auto_form=True, start_radio=True)
+    # App.new() -> __init__ already runs config through App.SCHEMA internally;
+    # pre-validating here would double-validate and corrupt the OTA provider
+    # list (dicts get turned into provider objects, then choke on a second pass).
+    app = await App.new(app_cfg, auto_form=True, start_radio=True)
     log.info("zigbee network up on %s", cfg.device)
     return app
 

@@ -28,4 +28,4 @@ if __name__ == "__main__":
     p.add_argument("--config", required=True)
     p.add_argument("--seconds", type=int, default=120)
     a = p.parse_args()
-    asyncio.run(main(Config.load(a.config), a.seconds))
+    asyncio.run(main(Config.load(a.config, require_plug_ieee=False), a.seconds))
