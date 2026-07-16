@@ -257,6 +257,8 @@ async def run(
                 state=decision.state.value,
                 reason=decision.reason,
                 manual_override=bool(manual_override and manual_override.is_set()),
+                body_setpoint_c=cfg.control.body_setpoint_c,
+                ambient_setpoint_c=cfg.control.ambient_setpoint_c,
             )
             slog.sample(**sample_kwargs)
             handle.recording.mirror(**sample_kwargs)

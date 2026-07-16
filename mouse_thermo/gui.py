@@ -23,13 +23,16 @@ import time
 from collections import deque
 from typing import Optional
 
+from PySide6.QtGui import QDoubleValidator
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QPushButton,
     QRadioButton,
@@ -61,6 +64,11 @@ class MainWindow(QMainWindow):
         # exactly this cross-thread pattern (see main.py's run()).
         self.manual_override = threading.Event()
         self.manual_on = threading.Event()
+
+        # Captured before any GUI override, so unchecking "use custom
+        # setpoints" has something to revert to.
+        self._orig_body_setpoint_c = cfg.control.body_setpoint_c
+        self._orig_ambient_setpoint_c = cfg.control.ambient_setpoint_c
 
         self._t0 = time.monotonic()
         self._t_hist: deque = deque()
@@ -140,6 +148,31 @@ class MainWindow(QMainWindow):
         outer.addWidget(freerun_box)
         self.freerun_widgets = [self.btn_on, self.btn_off, self.btn_auto]
 
+        setpoint_box = QGroupBox("Closed-loop setpoints (live-tunable, "
+                                  "checked against the hard safety max before applying)")
+        setpoint_grid = QGridLayout(setpoint_box)
+        temp_validator = QDoubleValidator(0.0, 100.0, 2)
+
+        setpoint_grid.addWidget(QLabel("Body setpoint (C):"), 0, 0)
+        self.edit_body_setpoint = QLineEdit(f"{self.cfg.control.body_setpoint_c:.2f}")
+        self.edit_body_setpoint.setValidator(temp_validator)
+        self.edit_body_setpoint.editingFinished.connect(self._on_setpoint_edited)
+        setpoint_grid.addWidget(self.edit_body_setpoint, 0, 1)
+
+        setpoint_grid.addWidget(QLabel("Ambient setpoint (C):"), 1, 0)
+        self.edit_ambient_setpoint = QLineEdit(f"{self.cfg.control.ambient_setpoint_c:.2f}")
+        self.edit_ambient_setpoint.setValidator(temp_validator)
+        self.edit_ambient_setpoint.editingFinished.connect(self._on_setpoint_edited)
+        setpoint_grid.addWidget(self.edit_ambient_setpoint, 1, 1)
+
+        self.chk_apply_setpoints = QCheckBox("Use these setpoints for closed loop")
+        self.chk_apply_setpoints.toggled.connect(self._on_setpoint_toggle)
+        setpoint_grid.addWidget(self.chk_apply_setpoints, 2, 0, 1, 2)
+
+        self.lbl_setpoint_status = QLabel("using config file values")
+        setpoint_grid.addWidget(self.lbl_setpoint_status, 3, 0, 1, 2)
+        outer.addWidget(setpoint_box)
+
         rec_box = QGroupBox("Recording")
         rec_layout = QVBoxLayout(rec_box)
         mode_row = QHBoxLayout()
@@ -182,6 +215,68 @@ class MainWindow(QMainWindow):
 
     def _resume_auto(self) -> None:
         self.manual_override.clear()
+
+    # ---- closed-loop setpoints -----------------------------------------------
+
+    def _uncheck_silently(self) -> None:
+        # Plain setChecked(False) would re-fire _on_setpoint_toggle(False),
+        # which reverts to the original config values AND overwrites the
+        # rejection message we just set -- block the signal for this one call.
+        self.chk_apply_setpoints.blockSignals(True)
+        self.chk_apply_setpoints.setChecked(False)
+        self.chk_apply_setpoints.blockSignals(False)
+
+    def _on_setpoint_toggle(self, checked: bool) -> None:
+        if self.handle is None:
+            return
+        if checked:
+            self._apply_setpoints()
+        else:
+            self.handle.cfg.control.body_setpoint_c = self._orig_body_setpoint_c
+            self.handle.cfg.control.ambient_setpoint_c = self._orig_ambient_setpoint_c
+            self.lbl_setpoint_status.setText("using config file values")
+            self.lbl_setpoint_status.setStyleSheet("")
+
+    def _on_setpoint_edited(self) -> None:
+        # Only takes effect if the checkbox is already ticked -- typing
+        # alone must not silently change what the controller is targeting.
+        if self.chk_apply_setpoints.isChecked():
+            self._apply_setpoints()
+
+    def _apply_setpoints(self) -> None:
+        if self.handle is None:
+            return
+        try:
+            body_sp = float(self.edit_body_setpoint.text())
+            amb_sp = float(self.edit_ambient_setpoint.text())
+        except ValueError:
+            self.lbl_setpoint_status.setText("invalid number -- not applied")
+            self.lbl_setpoint_status.setStyleSheet("color: red; font-weight: bold;")
+            self._uncheck_silently()
+            return
+
+        safety = self.handle.cfg.safety
+        if body_sp >= safety.body_max_c:
+            self.lbl_setpoint_status.setText(
+                f"REJECTED: body {body_sp:.2f}C must be below hard max {safety.body_max_c:.2f}C")
+            self.lbl_setpoint_status.setStyleSheet("color: red; font-weight: bold;")
+            self._uncheck_silently()
+            return
+        if amb_sp >= safety.ambient_max_c:
+            self.lbl_setpoint_status.setText(
+                f"REJECTED: ambient {amb_sp:.2f}C must be below hard max {safety.ambient_max_c:.2f}C")
+            self.lbl_setpoint_status.setStyleSheet("color: red; font-weight: bold;")
+            self._uncheck_silently()
+            return
+
+        # Controller.step() reads cfg.control fresh every tick, and this IS
+        # that same object (not a copy) -- takes effect on the next tick,
+        # no restart needed. Plain attribute assignment, safe enough for a
+        # setpoint float read cross-thread (same precedent as last_decision).
+        self.handle.cfg.control.body_setpoint_c = body_sp
+        self.handle.cfg.control.ambient_setpoint_c = amb_sp
+        self.lbl_setpoint_status.setText(f"ACTIVE: body={body_sp:.2f}C, ambient={amb_sp:.2f}C")
+        self.lbl_setpoint_status.setStyleSheet("color: green;")
 
     # ---- recording ----------------------------------------------------------
 

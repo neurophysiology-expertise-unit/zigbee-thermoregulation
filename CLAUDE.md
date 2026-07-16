@@ -13,6 +13,17 @@ Sonoff Zigbee smart plug driving a heat lamp, Sonoff SNZB-02 ambient
 temp/humidity sensor, implanted RFID temperature transponder read over serial
 via a separate repo, optional ESP32 temperature probe.
 
+**`config.yaml`'s defaults (body_max_c 38.5, body_setpoint_c 36.5) are for
+normal thermoregulation** -- keeping an animal warm without overheating it.
+`config.local.yaml` (gitignored, this machine's real experiment) is currently
+configured for a **hyperthermia/seizure-induction protocol**: body_setpoint_c
+42.0, body_max_c 43.5 (a deliberate 1.5C margin above target, not a typo), and
+sensors.body_valid_range raised to (30, 46) so real readings at/above the new
+hard max aren't discarded by the plausibility gate as an implausible sensor
+fault -- those are exactly the readings that must reach the safety supervisor
+to trigger LOCKOUT. Don't "fix" config.local.yaml's numbers to match
+config.yaml's; they're intentionally different protocols.
+
 ## Architecture
 
 ```
