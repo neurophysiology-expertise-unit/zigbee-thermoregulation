@@ -58,13 +58,18 @@ async def run(cfg: Config, max_seconds: Optional[float] = None) -> int:
             app = await start_app(cfg.zigbee)
             plug = ZigbeePlug(app, cfg.zigbee, asyncio.get_running_loop())
             await plug.bind_and_configure()
-            if cfg.zigbee.sensor_ieee:
-                listener = ZigbeeSensorListener(app, cfg.zigbee, amb_ch)
-                await listener.configure()
 
-        # ---- OFF before anything else ------------------------------------
+        # ---- OFF before anything else --------------------------------
+        # Must happen the instant the plug is controllable, before any other
+        # network setup (e.g. the ambient sensor bind below) that can hang
+        # or fail and leave the lamp's real-world state undetermined in the
+        # meantime.
         plug.set(False)
         slog.event("startup_lamp_off")
+
+        if not cfg.simulate and cfg.zigbee.sensor_ieee:
+            listener = ZigbeeSensorListener(app, cfg.zigbee, amb_ch)
+            await listener.configure()
 
         # ---- optional sensor threads -------------------------------------
         if cfg.rfid.enabled:
