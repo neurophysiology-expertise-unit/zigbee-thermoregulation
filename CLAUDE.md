@@ -36,6 +36,17 @@ Sonoff SNZB-02 ───┘    (stale+range)     (veto)      (hysteresis)   (zig
 | `logger.py` | Unified JSONL, one monotonic clock |
 | `sensors/rfid_chip.py` | Adapter for the UID Devices URH-2 reader (AnyCage protocol) |
 | `sensors/esp32_serial.py` | **STUB** — adapter for the ESP32 probe |
+| `gui.py` | PySide6 live monitor + manual override, runs `main.run()` in-process |
+
+`gui.py` is not a separate tool -- only one process can hold the Zigbee
+dongle / serial ports at a time, so it drives `main.run()` in a background
+thread via `on_ready`/`SessionHandle` rather than opening its own device
+connections. `pip install -r requirements-gui.txt` (kept separate from the
+core `requirements.txt` so headless deployments don't need Qt). Note:
+PySide6 6.11.1 failed to import on Windows here with a DLL load error
+(likely a packaging issue in that specific release); 6.8.0.2 works, hence
+the `<6.11` pin -- re-check with `python -c "from PySide6 import QtCore"`
+before loosening it.
 
 ## Invariants — do not violate without discussion
 

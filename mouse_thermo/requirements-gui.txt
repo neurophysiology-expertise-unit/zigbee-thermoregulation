@@ -1,0 +1,8 @@
+-r requirements.txt
+# PySide6 6.11.1 failed to import on Windows here (DLL load error, likely a
+# packaging issue in that specific release) -- 6.8.0.2 works. Pin an upper
+# bound so a fresh install doesn't silently grab a broken newer build; bump
+# it deliberately after checking `python -c "from PySide6 import QtCore"`.
+PySide6>=6.8,<6.11
+matplotlib>=3.7
+numpy>=1.24
