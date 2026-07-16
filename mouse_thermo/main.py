@@ -31,7 +31,7 @@ from .watchdog import Watchdog
 log = logging.getLogger("mouse_thermo")
 
 
-async def run(cfg: Config) -> int:
+async def run(cfg: Config, max_seconds: Optional[float] = None) -> int:
     cfg.validate()
 
     body_ch = SensorChannel("body_temp", cfg.sensors.body_stale_after_s,
@@ -101,6 +101,14 @@ async def run(cfg: Config) -> int:
             # default event loop). A Ctrl-C there still raises KeyboardInterrupt
             # into this coroutine and is caught by the fail-safe handler below.
             log.warning("graceful signal handling unavailable on this platform")
+
+        if max_seconds is not None:
+            # In-process auto-stop, independent of OS signal support -- this is
+            # what bench/dry-run testing on Windows relies on for a clean
+            # shutdown (through this same try/finally), since an external kill
+            # there would bypass the fail-safe lamp-off path entirely.
+            loop.call_later(max_seconds, stop.set)
+            log.info("auto-stop armed for %.1fs from now", max_seconds)
 
         log.info("control loop starting (period %.1fs)", cfg.control.loop_period_s)
 
@@ -172,6 +180,9 @@ def main() -> int:
     p.add_argument("--config", required=True)
     p.add_argument("--simulate", action="store_true")
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--max-seconds", type=float, default=None,
+                    help="Auto-stop after N seconds, still through the normal "
+                         "fail-safe shutdown path (bench/dry-run testing)")
     a = p.parse_args()
 
     logging.basicConfig(
@@ -179,7 +190,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
     )
     cfg = Config.load(a.config, simulate=a.simulate)
-    return asyncio.run(run(cfg))
+    return asyncio.run(run(cfg, max_seconds=a.max_seconds))
 
 
 if __name__ == "__main__":
