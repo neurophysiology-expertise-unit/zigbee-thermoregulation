@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -120,6 +121,15 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
+
+        output_row = QHBoxLayout()
+        output_row.addWidget(QLabel("Save recordings to:"))
+        self.edit_output_dir = QLineEdit(os.path.abspath("recordings"))
+        output_row.addWidget(self.edit_output_dir)
+        self.btn_browse_output = QPushButton("Browse...")
+        self.btn_browse_output.clicked.connect(self._browse_output_dir)
+        output_row.addWidget(self.btn_browse_output)
+        outer.addLayout(output_row)
 
         grid = QGridLayout()
         self.lbl_body = QLabel("--")
@@ -215,7 +225,9 @@ class MainWindow(QMainWindow):
         rec_btn_row.addWidget(self.lbl_recording)
         rec_layout.addLayout(rec_btn_row)
         outer.addWidget(rec_box)
-        self.recording_mode_widgets = [self.combo_loop_mode, self.edit_animal_id]
+        self.recording_mode_widgets = [
+            self.combo_loop_mode, self.edit_animal_id, self.edit_output_dir, self.btn_browse_output,
+        ]
 
         window_box = QGroupBox("Plot window (recent-only, not the whole session)")
         window_layout = QHBoxLayout(window_box)
@@ -361,14 +373,21 @@ class MainWindow(QMainWindow):
         return re.sub(r'[^A-Za-z0-9_-]', "", raw)
 
     @staticmethod
-    def _next_session_number(date_str: str, animal_id: str) -> int:
+    def _next_session_number(directory: str, date_str: str, animal_id: str) -> int:
         pattern = re.compile(rf"^{re.escape(date_str)}_{re.escape(animal_id)}_(\d+)\.jsonl$")
         try:
-            existing = os.listdir("recordings")
+            existing = os.listdir(directory)
         except FileNotFoundError:
             return 1
         nums = [int(m.group(1)) for name in existing if (m := pattern.match(name))]
         return max(nums, default=0) + 1
+
+    def _browse_output_dir(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Select folder to save recordings", self.edit_output_dir.text()
+        )
+        if chosen:
+            self.edit_output_dir.setText(chosen)
 
     def _start_recording(self) -> None:
         animal_id = self._sanitize_animal_id(self.edit_animal_id.text())
@@ -398,9 +417,10 @@ class MainWindow(QMainWindow):
                 self._set_freerun_combo("off")
             self.manual_override.set()
 
+        output_dir = self.edit_output_dir.text().strip() or os.path.abspath("recordings")
         date_str = datetime.datetime.now().strftime("%y%m%d")
-        session_num = self._next_session_number(date_str, animal_id)
-        path = f"recordings/{date_str}_{animal_id}_{session_num}.jsonl"
+        session_num = self._next_session_number(output_dir, date_str, animal_id)
+        path = os.path.join(output_dir, f"{date_str}_{animal_id}_{session_num}.jsonl")
         self.handle.recording.start(path, mode, self.cfg.to_dict())
 
         for w in self.freerun_widgets + self.recording_mode_widgets:
