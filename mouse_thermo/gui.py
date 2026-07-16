@@ -29,6 +29,7 @@ from PySide6.QtGui import QDoubleValidator
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QGridLayout,
     QGroupBox,
@@ -50,7 +51,8 @@ from .main import SessionHandle, run
 
 log = logging.getLogger("mouse_thermo.gui")
 
-HISTORY_S = 600.0   # rolling window for the live plot
+PLOT_WINDOW_OPTIONS_S = (1, 2, 4, 10)  # selectable rolling-plot window widths
+DEFAULT_PLOT_WINDOW_S = 4
 UI_PERIOD_MS = 500  # UI refresh rate; independent of the control loop's own period
 
 
@@ -76,6 +78,7 @@ class MainWindow(QMainWindow):
         self._t_hist: deque = deque()
         self._body_hist: deque = deque()
         self._amb_hist: deque = deque()
+        self._plot_window_s: float = DEFAULT_PLOT_WINDOW_S
 
         self._build_ui()
 
@@ -203,6 +206,27 @@ class MainWindow(QMainWindow):
         outer.addWidget(rec_box)
         self.recording_mode_widgets = [self.radio_closed, self.radio_open, self.edit_animal_id]
 
+        window_box = QGroupBox("Plot window (recent-only, not the whole session)")
+        window_layout = QHBoxLayout(window_box)
+        self.plot_window_group = QButtonGroup(self)
+        self.plot_window_group.setExclusive(True)
+        default_btn = None
+        for seconds in PLOT_WINDOW_OPTIONS_S:
+            btn = QPushButton(f"{seconds}s")
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda checked, s=seconds: self._set_plot_window(s))
+            self.plot_window_group.addButton(btn)
+            window_layout.addWidget(btn)
+            if seconds == DEFAULT_PLOT_WINDOW_S:
+                default_btn = btn
+        # Must setChecked() AFTER every button has joined the exclusive
+        # QButtonGroup -- doing it during construction (before the group had
+        # more than one member) left the wrong button visually highlighted,
+        # even though self._plot_window_s itself was already correct.
+        if default_btn is not None:
+            default_btn.setChecked(True)
+        outer.addWidget(window_box)
+
         self.fig = Figure(figsize=(6, 3))
         self.ax = self.fig.add_subplot(111)
         self.ax.set_xlabel("time (s)")
@@ -212,6 +236,11 @@ class MainWindow(QMainWindow):
         self.ax.legend(loc="upper right")
         self.canvas = FigureCanvas(self.fig)
         outer.addWidget(self.canvas)
+
+    # ---- plot window --------------------------------------------------------
+
+    def _set_plot_window(self, seconds: float) -> None:
+        self._plot_window_s = seconds
 
     # ---- manual control buttons --------------------------------------------
 
@@ -414,15 +443,18 @@ class MainWindow(QMainWindow):
         self._t_hist.append(t)
         self._body_hist.append(body.value if body is not None else float("nan"))
         self._amb_hist.append(amb.value if amb is not None else float("nan"))
-        while self._t_hist and t - self._t_hist[0] > HISTORY_S:
+        # Deliberately only the selected recent window, not the whole
+        # session -- drop anything older than that off the left, every tick.
+        while self._t_hist and t - self._t_hist[0] > self._plot_window_s:
             self._t_hist.popleft()
             self._body_hist.popleft()
             self._amb_hist.popleft()
 
         self.line_body.set_data(self._t_hist, self._body_hist)
         self.line_amb.set_data(self._t_hist, self._amb_hist)
+        self.ax.set_xlim(max(0.0, t - self._plot_window_s), max(t, self._plot_window_s))
         self.ax.relim()
-        self.ax.autoscale_view()
+        self.ax.autoscale_view(scalex=False)  # y only; x is the fixed sweep window above
         self.canvas.draw_idle()
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
