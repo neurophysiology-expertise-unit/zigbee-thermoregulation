@@ -64,7 +64,13 @@ async def run(cfg: Config, max_seconds: Optional[float] = None) -> int:
         # network setup (e.g. the ambient sensor bind below) that can hang
         # or fail and leave the lamp's real-world state undetermined in the
         # meantime.
-        plug.set(False)
+        #
+        # await set_async(), not set(): this coroutine runs ON the plug's own
+        # event loop, and set() bridges to that same loop via
+        # run_coroutine_threadsafe + a blocking wait -- calling it from here
+        # deadlocks until the 10s timeout (found on real hardware: every
+        # single plug command here timed out).
+        await plug.set_async(False)
         slog.event("startup_lamp_off")
 
         if not cfg.simulate and cfg.zigbee.sensor_ieee:
@@ -133,7 +139,7 @@ async def run(cfg: Config, max_seconds: Optional[float] = None) -> int:
             decision = ctrl.step(body, amb, now)
 
             if decision.lamp_on != plug.state():
-                plug.set(decision.lamp_on)
+                await plug.set_async(decision.lamp_on)
 
             wd.kick()
             slog.sample(
@@ -168,7 +174,7 @@ async def run(cfg: Config, max_seconds: Optional[float] = None) -> int:
             s.stop()
         if plug is not None:
             try:
-                plug.set(False)
+                await plug.set_async(False)
                 slog.event("shutdown_lamp_off")
             except Exception as e:
                 log.critical("COULD NOT TURN LAMP OFF: %r -- CHECK THE RIG NOW", e)

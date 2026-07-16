@@ -120,10 +120,12 @@ class ZigbeePlug(Plug):
         return self._power_w
 
     def close(self) -> None:
-        try:
-            self.set(False)
-        except Exception:
-            log.exception("FAILED TO TURN LAMP OFF ON CLOSE -- CHECK RIG PHYSICALLY")
+        # No redundant off-command here: main.py's finally block already
+        # awaits set_async(False) and logs loudly if that fails. A second
+        # attempt via the synchronous set() would deadlock for 10s if called
+        # from the event loop's own thread (as main.py does) -- see set_async
+        # docs on actuators.base.Plug.
+        pass
 
 
 class _PlugListener:
