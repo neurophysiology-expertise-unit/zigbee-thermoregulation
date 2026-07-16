@@ -22,7 +22,8 @@ class SessionLogger:
 
     def sample(self, *, body, body_age, ambient, ambient_age,
                lamp_cmd, lamp_state, power_w, state, reason,
-               controller_wanted=None, manual_override=False) -> None:
+               controller_wanted=None, manual_override=False,
+               record_mode=None) -> None:
         self.write({
             "type": "sample",
             "body_c": body, "body_age_s": body_age,
@@ -30,6 +31,7 @@ class SessionLogger:
             "lamp_cmd": lamp_cmd, "lamp_state": lamp_state, "power_w": power_w,
             "state": state, "reason": reason,
             "controller_wanted": controller_wanted, "manual_override": manual_override,
+            "record_mode": record_mode,
         })
 
     def event(self, kind: str, **kw) -> None:

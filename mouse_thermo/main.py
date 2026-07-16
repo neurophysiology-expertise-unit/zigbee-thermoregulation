@@ -16,11 +16,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from .bus import SensorChannel
@@ -31,6 +32,44 @@ from .safety import SafetySupervisor
 from .watchdog import Watchdog
 
 log = logging.getLogger("mouse_thermo")
+
+
+class RecordingBox:
+    """Thread-safe start/stop for a dedicated recording file, mirrored
+    alongside the main session.jsonl. start()/stop() are called from an
+    external thread (e.g. the GUI); mirror() is called every tick from the
+    control loop's own thread -- the lock keeps logger+mode consistent
+    across that boundary.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._logger: Optional[SessionLogger] = None
+        self.mode: Optional[str] = None  # "closed_loop" | "open_loop"
+
+    def start(self, path: str, mode: str, config_dump: dict) -> None:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        logger = SessionLogger(path, config_dump)
+        with self._lock:
+            self._logger = logger
+            self.mode = mode
+
+    def stop(self) -> None:
+        with self._lock:
+            logger, self._logger, self.mode = self._logger, None, None
+        if logger is not None:
+            logger.close()
+
+    @property
+    def active(self) -> bool:
+        with self._lock:
+            return self._logger is not None
+
+    def mirror(self, **kwargs) -> None:
+        with self._lock:
+            logger, mode = self._logger, self.mode
+        if logger is not None:
+            logger.sample(**kwargs, record_mode=mode)
 
 
 @dataclass
@@ -48,6 +87,8 @@ class SessionHandle:
     body_ch: SensorChannel
     amb_ch: SensorChannel
     plug: object
+    cfg: Config
+    recording: RecordingBox = field(default_factory=RecordingBox)
     last_decision: Optional[Decision] = None
 
     def request_shutdown(self) -> None:
@@ -163,7 +204,7 @@ async def run(
 
         log.info("control loop starting (period %.1fs)", cfg.control.loop_period_s)
 
-        handle = SessionHandle(loop=loop, stop=stop, body_ch=body_ch, amb_ch=amb_ch, plug=plug)
+        handle = SessionHandle(loop=loop, stop=stop, body_ch=body_ch, amb_ch=amb_ch, plug=plug, cfg=cfg)
         if on_ready is not None:
             on_ready(handle)
 
@@ -200,7 +241,7 @@ async def run(
                 await plug.set_async(desired)
 
             wd.kick()
-            slog.sample(
+            sample_kwargs = dict(
                 body=None if body is None else body.value,
                 body_age=body_ch.age(now),
                 ambient=None if amb is None else amb.value,
@@ -213,6 +254,8 @@ async def run(
                 reason=decision.reason,
                 manual_override=bool(manual_override and manual_override.is_set()),
             )
+            slog.sample(**sample_kwargs)
+            handle.recording.mirror(**sample_kwargs)
             if decision.state is State.LOCKOUT:
                 log.warning("LOCKOUT: %s", decision.reason)
 
