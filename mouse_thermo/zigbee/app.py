@@ -156,11 +156,15 @@ class ZigbeeSensorListener:
     async def configure(self) -> None:
         cl = self.ep.in_clusters[TemperatureMeasurement.cluster_id]
         await cl.bind()
-        # Battery device: it reports on its own schedule; aggressive intervals
-        # are mostly ignored. THIS IS WHY IT CANNOT BE THE ONLY SAFETY LAYER.
+        # Battery device: it reports on its own schedule, and the device is
+        # free to ignore this as only a request, not a guarantee -- THIS IS
+        # WHY IT CANNOT BE THE ONLY SAFETY LAYER regardless of what's asked
+        # for here. Requesting a shorter max_interval and finer
+        # reportable_change than the original (300s/0.2C) trades a bit more
+        # battery drain for faster feedback during bring-up/testing.
         await cl.configure_reporting(
             TemperatureMeasurement.AttributeDefs.measured_value.id,
-            min_interval=10, max_interval=300, reportable_change=20,  # 0.2 C
+            min_interval=5, max_interval=30, reportable_change=5,  # 0.05 C
         )
 
     def last_seen_age(self, now: float) -> Optional[float]:

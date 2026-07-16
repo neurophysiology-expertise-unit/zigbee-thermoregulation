@@ -35,6 +35,12 @@ class RfidChipSource(SensorSource):
         self._ser = None
         self._buf = b""
         self._pending_tag: Optional[str] = None
+        # Raw (tag_id, temp_c, monotonic_t) for every reading the reader
+        # produces, BEFORE the channel's plausibility gate -- lets a GUI show
+        # "the reader is alive and reading X" during bring-up even when X is
+        # outside body_valid_range (e.g. a bench chip at room temperature)
+        # and therefore correctly never reaches the validated channel.
+        self.last_raw_reading: Optional[Tuple[str, float, float]] = None
 
     def _open(self):
         import serial  # pyserial
@@ -87,6 +93,7 @@ class RfidChipSource(SensorSource):
                 time.sleep(0.05)
                 continue
             tag_id, temp_c = got
+            self.last_raw_reading = (tag_id, temp_c, time.monotonic())
             if self.cfg.transponder_id and tag_id != self.cfg.transponder_id:
                 log.debug("ignoring foreign tag %s", tag_id)
                 continue

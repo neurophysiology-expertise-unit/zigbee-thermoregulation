@@ -55,7 +55,7 @@ DEFAULT_PLOT_WINDOW_S = 4
 UI_PERIOD_MS = 500     # UI refresh rate; independent of the control loop's own period
 SWEEP_RESOLUTION = 200  # samples across one full sweep, independent of poll rate
 SWEEP_ERASE_FRACTION = 0.05  # fraction of the sweep width blanked just ahead of the cursor
-PLOT_Y_MIN, PLOT_Y_MAX = 24.0, 45.0  # fixed temp axis -- not autoscaled to the data
+PLOT_Y_MIN, PLOT_Y_MAX = 20.0, 50.0  # fixed temp axis -- not autoscaled to the data
 
 
 class MainWindow(QMainWindow):
@@ -134,6 +134,7 @@ class MainWindow(QMainWindow):
         grid = QGridLayout()
         self.lbl_body = QLabel("--")
         self.lbl_ambient = QLabel("--")
+        self.lbl_raw_rfid = QLabel("--")
         self.lbl_lamp = QLabel("--")
         self.lbl_power = QLabel("--")
         self.lbl_plug_link = QLabel("--")
@@ -144,6 +145,7 @@ class MainWindow(QMainWindow):
         rows = [
             ("Body temp (C)", self.lbl_body),
             ("Ambient temp (C)", self.lbl_ambient),
+            ("Raw RFID read (unvalidated)", self.lbl_raw_rfid),
             ("Lamp state", self.lbl_lamp),
             ("Power (W)", self.lbl_power),
             ("Plug link", self.lbl_plug_link),
@@ -468,6 +470,14 @@ class MainWindow(QMainWindow):
 
         self.lbl_body.setText(f"{body.value:.2f}" if body is not None else "stale/unknown")
         self.lbl_ambient.setText(f"{amb.value:.2f}" if amb is not None else "stale/unknown")
+
+        raw = self.handle.rfid_source.last_raw_reading if self.handle.rfid_source is not None else None
+        if raw is None:
+            self.lbl_raw_rfid.setText("no contact yet / rfid disabled")
+        else:
+            tag_id, temp_c, t_read = raw
+            self.lbl_raw_rfid.setText(f"tag {tag_id}: {temp_c:.1f}C ({now - t_read:.0f}s ago)")
+
         self.lbl_lamp.setText(
             "ON" if lamp_state is True else "OFF" if lamp_state is False else "unknown"
         )

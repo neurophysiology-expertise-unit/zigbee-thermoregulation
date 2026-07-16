@@ -91,6 +91,7 @@ class SessionHandle:
     recording: RecordingBox = field(default_factory=RecordingBox)
     last_decision: Optional[Decision] = None
     ambient_sensor: Optional[object] = None  # ZigbeeSensorListener, for last_seen_age(); None if unconfigured/simulated
+    rfid_source: Optional[object] = None  # RfidChipSource, for last_raw_reading; None if rfid.enabled is False
 
     def request_shutdown(self) -> None:
         """Safe to call from any thread."""
@@ -174,9 +175,11 @@ async def run(
                           "continuing without it")
 
         # ---- optional sensor threads -------------------------------------
+        rfid_source = None
         if cfg.rfid.enabled:
             from .sensors.rfid_chip import RfidChipSource
-            sources.append(RfidChipSource(cfg.rfid, body_ch))
+            rfid_source = RfidChipSource(cfg.rfid, body_ch)
+            sources.append(rfid_source)
         if cfg.esp32.enabled:
             from .sensors.esp32_serial import Esp32Source
             target = {"ambient": amb_ch, "body": body_ch}.get(cfg.esp32.role)
@@ -242,7 +245,7 @@ async def run(
         log.info("control loop starting (period %.1fs)", cfg.control.loop_period_s)
 
         handle = SessionHandle(loop=loop, stop=stop, body_ch=body_ch, amb_ch=amb_ch, plug=plug, cfg=cfg,
-                                ambient_sensor=ambient_listener)
+                                ambient_sensor=ambient_listener, rfid_source=rfid_source)
         if on_ready is not None:
             on_ready(handle)
 
