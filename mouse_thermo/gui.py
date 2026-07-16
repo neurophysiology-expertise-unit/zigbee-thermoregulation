@@ -104,6 +104,8 @@ class MainWindow(QMainWindow):
         self.lbl_ambient = QLabel("--")
         self.lbl_lamp = QLabel("--")
         self.lbl_power = QLabel("--")
+        self.lbl_plug_link = QLabel("--")
+        self.lbl_ambient_link = QLabel("--")
         self.lbl_state = QLabel("--")
         self.lbl_reason = QLabel("--")
         self.lbl_mode = QLabel("starting...")
@@ -112,6 +114,8 @@ class MainWindow(QMainWindow):
             ("Ambient temp (C)", self.lbl_ambient),
             ("Lamp state", self.lbl_lamp),
             ("Power (W)", self.lbl_power),
+            ("Plug link", self.lbl_plug_link),
+            ("Ambient sensor link", self.lbl_ambient_link),
             ("Controller state", self.lbl_state),
             ("Reason", self.lbl_reason),
             ("Mode", self.lbl_mode),
@@ -224,6 +228,21 @@ class MainWindow(QMainWindow):
         self.btn_record.setText("Start Recording")
         self.lbl_recording.setText("not recording")
 
+    # ---- link-quality display -------------------------------------------------
+
+    @staticmethod
+    def _set_link_label(label: QLabel, age: Optional[float], *, stale_after_s: float,
+                         none_text: str = "no contact yet / simulated") -> None:
+        if age is None:
+            label.setText(none_text)
+            label.setStyleSheet("color: gray;")
+        elif age <= stale_after_s:
+            label.setText(f"OK ({age:.0f}s ago)")
+            label.setStyleSheet("color: green;")
+        else:
+            label.setText(f"STALE ({age:.0f}s ago)")
+            label.setStyleSheet("color: red; font-weight: bold;")
+
     # ---- polling tick -------------------------------------------------------
 
     def _tick(self) -> None:
@@ -232,6 +251,7 @@ class MainWindow(QMainWindow):
             return
 
         now = time.monotonic()
+        now_wall = time.time()  # last_seen_age is wall-clock based (zigpy), unlike everything else here
         body = self.handle.body_ch.get(now)
         amb = self.handle.amb_ch.get(now)
         lamp_state = self.handle.plug.state()
@@ -244,6 +264,14 @@ class MainWindow(QMainWindow):
             "ON" if lamp_state is True else "OFF" if lamp_state is False else "unknown"
         )
         self.lbl_power.setText(f"{power:.1f}" if power is not None else "--")
+
+        self._set_link_label(self.lbl_plug_link, self.handle.plug.last_seen_age(now_wall), stale_after_s=90)
+        sensor_age = (
+            self.handle.ambient_sensor.last_seen_age(now_wall)
+            if self.handle.ambient_sensor is not None else None
+        )
+        self._set_link_label(self.lbl_ambient_link, sensor_age, stale_after_s=360,
+                              none_text="no contact yet / not configured / simulated")
         if decision is not None:
             self.lbl_state.setText(decision.state.value)
             self.lbl_reason.setText(decision.reason)

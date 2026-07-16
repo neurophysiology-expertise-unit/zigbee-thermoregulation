@@ -30,5 +30,15 @@ class Plug(ABC):
         """Actuator feedback: did the lamp actually draw current? None if unsupported."""
         return None
 
+    def last_seen_age(self, now: float) -> Optional[float]:
+        """Seconds since the device last sent ANYTHING (any packet, not just
+        an on/off report) -- a link-health signal distinct from state(),
+        which only reflects the last CONFIRMED on/off value. None if
+        unsupported (e.g. DummyPlug) or nothing has been heard yet.
+        `now` must be time.time() (wall clock), not time.monotonic() --
+        zigpy's last_seen is a Unix timestamp.
+        """
+        return None
+
     def close(self) -> None:
         pass

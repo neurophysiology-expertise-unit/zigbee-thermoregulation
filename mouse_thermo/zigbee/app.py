@@ -119,6 +119,10 @@ class ZigbeePlug(Plug):
     def power_w(self) -> Optional[float]:
         return self._power_w
 
+    def last_seen_age(self, now: float) -> Optional[float]:
+        seen = self.dev.last_seen
+        return None if seen is None else now - seen
+
     def close(self) -> None:
         # No redundant off-command here: main.py's finally block already
         # awaits set_async(False) and logs loudly if that fails. A second
@@ -158,6 +162,12 @@ class ZigbeeSensorListener:
             TemperatureMeasurement.AttributeDefs.measured_value.id,
             min_interval=10, max_interval=300, reportable_change=20,  # 0.2 C
         )
+
+    def last_seen_age(self, now: float) -> Optional[float]:
+        """`now` must be time.time(), not time.monotonic() -- see Plug's
+        last_seen_age docstring in actuators/base.py."""
+        seen = self.dev.last_seen
+        return None if seen is None else now - seen
 
     def attribute_updated(self, cluster, attrid, value, timestamp=None):
         if cluster.cluster_id == TemperatureMeasurement.cluster_id and attrid == 0x0000:

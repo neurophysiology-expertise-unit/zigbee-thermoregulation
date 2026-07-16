@@ -90,6 +90,7 @@ class SessionHandle:
     cfg: Config
     recording: RecordingBox = field(default_factory=RecordingBox)
     last_decision: Optional[Decision] = None
+    ambient_sensor: Optional[object] = None  # ZigbeeSensorListener, for last_seen_age(); None if unconfigured/simulated
 
     def request_shutdown(self) -> None:
         """Safe to call from any thread."""
@@ -117,6 +118,7 @@ async def run(
     sources = []
     app = None
     plug = None
+    ambient_listener = None
 
     try:
         # ---- actuator + zigbee sensor ------------------------------------
@@ -148,6 +150,7 @@ async def run(
             listener = ZigbeeSensorListener(app, cfg.zigbee, amb_ch)
             try:
                 await listener.configure()
+                ambient_listener = listener
             except Exception:
                 # The SNZB-02 is documented (CLAUDE.md) as a fallback/logging
                 # input, not the primary safety sensor -- a bind hiccup on a
@@ -204,7 +207,8 @@ async def run(
 
         log.info("control loop starting (period %.1fs)", cfg.control.loop_period_s)
 
-        handle = SessionHandle(loop=loop, stop=stop, body_ch=body_ch, amb_ch=amb_ch, plug=plug, cfg=cfg)
+        handle = SessionHandle(loop=loop, stop=stop, body_ch=body_ch, amb_ch=amb_ch, plug=plug, cfg=cfg,
+                                ambient_sensor=ambient_listener)
         if on_ready is not None:
             on_ready(handle)
 
