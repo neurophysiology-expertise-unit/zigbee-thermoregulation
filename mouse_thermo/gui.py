@@ -468,10 +468,27 @@ class MainWindow(QMainWindow):
         power = self.handle.plug.power_w()
         decision = self.handle.last_decision
 
-        self.lbl_body.setText(f"{body.value:.2f}" if body is not None else "stale/unknown")
+        raw = self.handle.rfid_source.last_raw_reading if self.handle.rfid_source is not None else None
+
+        if body is not None:
+            self.lbl_body.setText(f"{body.value:.2f}")
+            self.lbl_body.setStyleSheet("")
+        elif raw is not None:
+            # Not what the safety system is acting on -- body_ch already
+            # rejected this (out of the 30-46C physiological range, or just
+            # stale) and the controller still sees "no usable temperature
+            # source" regardless of what's shown here. Shown anyway, clearly
+            # labeled, so bring-up testing can see the reader is alive
+            # without touching the actual plausibility gate.
+            tag_id, temp_c, _ = raw
+            self.lbl_body.setText(f"{temp_c:.2f} (raw, NOT validated/used)")
+            self.lbl_body.setStyleSheet("color: darkorange;")
+        else:
+            self.lbl_body.setText("stale/unknown")
+            self.lbl_body.setStyleSheet("")
+
         self.lbl_ambient.setText(f"{amb.value:.2f}" if amb is not None else "stale/unknown")
 
-        raw = self.handle.rfid_source.last_raw_reading if self.handle.rfid_source is not None else None
         if raw is None:
             self.lbl_raw_rfid.setText("no contact yet / rfid disabled")
         else:
