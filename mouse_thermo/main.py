@@ -18,12 +18,14 @@ import asyncio
 import logging
 import signal
 import sys
+import threading
 import time
-from typing import Optional
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 from .bus import SensorChannel
 from .config import Config
-from .controller import Controller, State
+from .controller import Controller, Decision, State
 from .logger import SessionLogger
 from .safety import SafetySupervisor
 from .watchdog import Watchdog
@@ -31,7 +33,35 @@ from .watchdog import Watchdog
 log = logging.getLogger("mouse_thermo")
 
 
-async def run(cfg: Config, max_seconds: Optional[float] = None) -> int:
+@dataclass
+class SessionHandle:
+    """Live, thread-safe-to-read handle for external observers (e.g. a GUI)
+    running on a different thread than this module's asyncio loop.
+
+    body_ch/amb_ch (SensorChannel.get()) and plug (state()/power_w()) are
+    already safe for cross-thread reads by their own design. last_decision is
+    plain attribute replacement, not append -- also safe to read (if slightly
+    stale by a few ms) without a lock.
+    """
+    loop: asyncio.AbstractEventLoop
+    stop: asyncio.Event
+    body_ch: SensorChannel
+    amb_ch: SensorChannel
+    plug: object
+    last_decision: Optional[Decision] = None
+
+    def request_shutdown(self) -> None:
+        """Safe to call from any thread."""
+        self.loop.call_soon_threadsafe(self.stop.set)
+
+
+async def run(
+    cfg: Config,
+    max_seconds: Optional[float] = None,
+    manual_override: Optional[threading.Event] = None,
+    manual_on: Optional[threading.Event] = None,
+    on_ready: Optional[Callable[[SessionHandle], None]] = None,
+) -> int:
     cfg.validate()
 
     body_ch = SensorChannel("body_temp", cfg.sensors.body_stale_after_s,
@@ -133,6 +163,10 @@ async def run(cfg: Config, max_seconds: Optional[float] = None) -> int:
 
         log.info("control loop starting (period %.1fs)", cfg.control.loop_period_s)
 
+        handle = SessionHandle(loop=loop, stop=stop, body_ch=body_ch, amb_ch=amb_ch, plug=plug)
+        if on_ready is not None:
+            on_ready(handle)
+
         # ---- main loop ----------------------------------------------------
         while not stop.is_set():
             now = time.monotonic()
@@ -147,9 +181,23 @@ async def run(cfg: Config, max_seconds: Optional[float] = None) -> int:
                 body, amb = body_ch.get(), amb_ch.get()
 
             decision = ctrl.step(body, amb, now)
+            handle.last_decision = decision
 
-            if decision.lamp_on != plug.state():
-                await plug.set_async(decision.lamp_on)
+            # Manual override substitutes the CONTROLLER's regulation choice
+            # (NORMAL/FALLBACK hysteresis) with a directly-commanded state --
+            # it never substitutes for a safety LOCKOUT. Safety only vetoes,
+            # never commands ON, and that must hold in manual mode too.
+            if (
+                manual_override is not None
+                and manual_override.is_set()
+                and decision.state is not State.LOCKOUT
+            ):
+                desired = bool(manual_on and manual_on.is_set())
+            else:
+                desired = decision.lamp_on
+
+            if desired != plug.state():
+                await plug.set_async(desired)
 
             wd.kick()
             slog.sample(
@@ -157,11 +205,13 @@ async def run(cfg: Config, max_seconds: Optional[float] = None) -> int:
                 body_age=body_ch.age(now),
                 ambient=None if amb is None else amb.value,
                 ambient_age=amb_ch.age(now),
-                lamp_cmd=decision.lamp_on,
+                lamp_cmd=desired,
+                controller_wanted=decision.lamp_on,
                 lamp_state=plug.state(),
                 power_w=plug.power_w(),
                 state=decision.state.value,
                 reason=decision.reason,
+                manual_override=bool(manual_override and manual_override.is_set()),
             )
             if decision.state is State.LOCKOUT:
                 log.warning("LOCKOUT: %s", decision.reason)
