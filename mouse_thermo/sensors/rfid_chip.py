@@ -1,17 +1,30 @@
-"""ADAPTER STUB for the UID / implanted transponder reader.
+"""Adapter for the UID Devices URH-2 (LabScan) reader, AnyCage serial protocol.
 
-Fill in _read_one() using your existing serial repo. Contract:
-  returns (transponder_id: str, body_temp_c: float) or None on timeout.
-Everything else -- validation, staleness, safety -- is already handled.
+Confirmed against real hardware on COM5 @ 38400 baud: keepalive lines of bare
+'X' characters, '0'/'10' acks, and readings as either a single "TAG,TEMP" line
+or a TAG line followed by a separate TEMP line. Protocol and arm sequence per
+https://github.com/neurophysiology-expertise-unit/anycage-influx-gateway.
 """
 from __future__ import annotations
-import logging, time
+import logging, re, time
 from typing import Optional, Tuple
 from .base import SensorSource
 from ..bus import SensorChannel
 from ..config import RfidConfig
 
 log = logging.getLogger(__name__)
+
+_FULL_RE = re.compile(r"^\s*([0-9A-F]{6,16})\s*,\s*(<25|\d+(?:\.\d+)?)\s*$", re.IGNORECASE)
+_TAG_RE = re.compile(r"^[0-9A-F]{6,16}$", re.IGNORECASE)
+_TEMP_RE = re.compile(r"^(<25|\d+(?:\.\d+)?)$")
+
+_ARM_COMMANDS = ("CN 0", "TOR 10", "CID 0", "MD 0")
+_ARM_COMMAND_DELAY_S = 0.08
+_ARM_INIT_WAIT_S = 0.25
+
+
+def _temp_to_number(token: str) -> float:
+    return 24.0 if token == "<25" else float(token)
 
 
 class RfidChipSource(SensorSource):
@@ -20,17 +33,51 @@ class RfidChipSource(SensorSource):
         self.cfg = cfg
         self.ch = channel
         self._ser = None
+        self._buf = b""
+        self._pending_tag: Optional[str] = None
 
     def _open(self):
         import serial  # pyserial
-        self._ser = serial.Serial(self.cfg.port, self.cfg.baudrate, timeout=1.0)
+        self._ser = serial.Serial(self.cfg.port, self.cfg.baudrate, timeout=0.2)
+        time.sleep(_ARM_INIT_WAIT_S)
+        self._ser.reset_input_buffer()
+        for cmd in _ARM_COMMANDS:
+            self._ser.write((cmd + "\r").encode())
+            time.sleep(_ARM_COMMAND_DELAY_S)
+        self._ser.reset_input_buffer()
 
     def _read_one(self) -> Optional[Tuple[str, float]]:
-        # >>> REPLACE WITH YOUR REPO'S CALL <<<
-        # e.g.  tag = uid_reader.read(self._ser); return tag.id, tag.temp_c
-        raise NotImplementedError(
-            "wire this to the UID serial repo: return (id, temp_c) or None"
-        )
+        chunk = self._ser.read(4096)
+        if not chunk:
+            return None
+        self._buf += chunk
+
+        while b"\r" in self._buf:
+            raw, self._buf = self._buf.split(b"\r", 1)
+            line = raw.decode(errors="ignore").strip()
+
+            if not line or set(line) <= {"X"} or line in {"0", "10"}:
+                continue
+            if line.startswith("UI Devices"):
+                continue
+
+            m = _FULL_RE.match(line)
+            if m:
+                self._pending_tag = None
+                return m.group(1).upper(), _temp_to_number(m.group(2))
+
+            if _TAG_RE.match(line):
+                self._pending_tag = line.upper()
+                continue
+
+            if _TEMP_RE.match(line) and self._pending_tag:
+                tag_id = self._pending_tag
+                self._pending_tag = None
+                return tag_id, _temp_to_number(line)
+
+            log.debug("unrecognized line from reader: %r", line)
+
+        return None
 
     def read_loop(self) -> None:
         self._open()

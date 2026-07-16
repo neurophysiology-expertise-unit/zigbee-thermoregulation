@@ -34,7 +34,7 @@ Sonoff SNZB-02 ───┘    (stale+range)     (veto)      (hysteresis)   (zig
 | `zigbee/app.py` | zigpy/bellows: plug actuator + SNZB-02 listener |
 | `watchdog.py` | Software watchdog, forces lamp off if main loop stalls |
 | `logger.py` | Unified JSONL, one monotonic clock |
-| `sensors/rfid_chip.py` | **STUB** — adapter for the UID serial repo |
+| `sensors/rfid_chip.py` | Adapter for the UID Devices URH-2 reader (AnyCage protocol) |
 | `sensors/esp32_serial.py` | **STUB** — adapter for the ESP32 probe |
 
 ## Invariants — do not violate without discussion
@@ -82,15 +82,17 @@ test suite is the specification.
 ## Current state
 
 Working: safety supervisor, controller, bus, watchdog, logger, zigpy layer,
-pairing helper, simulation mode. 11/11 tests pass. Sim loop verified end to end.
+pairing helper, simulation mode, RFID adapter. 11/11 tests pass. Sim loop and
+RFID reader verified end to end against real hardware.
+
+Zigbee devices paired: SONOFF S60ZBTPF plug, SONOFF SNZB-02P ambient sensor
+(a spare SNZB-02D is also paired but unused). IEEE addresses and the reader's
+COM port live in the gitignored `config.local.yaml`, not `config.yaml`.
 
 **Open work:**
-1. Wire `sensors/rfid_chip.py::_read_one()` → return `(tag_id, body_temp_c)` or
-   `None` on timeout. Source repo to be added (UID serial RFID reader).
-2. Wire `sensors/esp32_serial.py::_parse()` → return float from one line.
+1. Wire `sensors/esp32_serial.py::_parse()` → return float from one line.
    Currently handles bare float or `{"t": 27.4}`.
-3. Pair devices, fill `plug_ieee` / `sensor_ieee` in `config.yaml`.
-4. Tune `ambient_setpoint_c` / `body_setpoint_c` against the real box.
+2. Tune `ambient_setpoint_c` / `body_setpoint_c` against the real box.
 
 ## Known limitations — do not paper over these in code
 
