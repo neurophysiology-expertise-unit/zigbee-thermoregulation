@@ -147,11 +147,22 @@ async def run(
         slog.event("startup_lamp_off")
 
         if not cfg.simulate and cfg.zigbee.sensor_ieee:
+            # Reuse the SAME listener instance across attempts -- it's
+            # constructed once and registers itself with the zigpy device;
+            # reconstructing on each retry would stack duplicate listeners.
             listener = ZigbeeSensorListener(app, cfg.zigbee, amb_ch)
-            try:
-                await listener.configure()
-                ambient_listener = listener
-            except Exception:
+            for attempt in range(1, 4):
+                try:
+                    await listener.configure()
+                    ambient_listener = listener
+                    break
+                except Exception:
+                    log.warning("ambient sensor bind attempt %d/3 failed "
+                                "(sleepy battery end device -- retrying)",
+                                attempt, exc_info=True)
+                    if attempt < 3:
+                        await asyncio.sleep(2.0)
+            else:
                 # The SNZB-02 is documented (CLAUDE.md) as a fallback/logging
                 # input, not the primary safety sensor -- a bind hiccup on a
                 # sleepy battery end device shouldn't take down the whole
@@ -159,7 +170,8 @@ async def run(
                 # and stays permanently stale, which the controller already
                 # treats as "unknown -> unsafe" (invariant 2), i.e. the
                 # correct fail-cold degradation, not a crash.
-                log.exception("ambient sensor bind failed; continuing without it")
+                log.error("ambient sensor bind failed after 3 attempts; "
+                          "continuing without it")
 
         # ---- optional sensor threads -------------------------------------
         if cfg.rfid.enabled:
