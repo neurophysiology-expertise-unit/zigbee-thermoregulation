@@ -28,6 +28,11 @@ class Decision:
     lamp_on: bool
     state: State
     reason: str
+    # True for a real hard-ceiling breach, stuck-on latch, or a latch not yet
+    # released -- never overridable. False for the "blind operation, both
+    # sensors stale" veto, which recovers on its own and (by operator choice)
+    # can be overridden by manual control. See safety.Verdict.latched.
+    latched: bool = False
 
 
 class Controller:
@@ -68,7 +73,7 @@ class Controller:
         if not verdict.allow_heat:
             on = self._apply(False, now, force=True)   # OFF ignores dwell
             self.safety.note_lamp_command(on, now)
-            return Decision(on, State.LOCKOUT, verdict.reason)
+            return Decision(on, State.LOCKOUT, verdict.reason, latched=verdict.latched)
 
         # --- Ambient ceiling as a soft regulator, always active -------------
         # Even in NORMAL we refuse to heat if ambient is at/above its setpoint.

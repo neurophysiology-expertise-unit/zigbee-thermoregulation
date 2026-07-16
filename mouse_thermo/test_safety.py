@@ -23,6 +23,7 @@ def test_ambient_hard_max_latches_and_stays_latched():
     sup, ctrl = mk(ambient_max_c=32.0, lockout_release_hysteresis_c=1.0)
     d = ctrl.step(R(36.0), R(32.5))
     assert d.lamp_on is False and d.state is State.LOCKOUT
+    assert d.latched is True, "a real hard-ceiling breach must never be overridable"
     # cooled a little, but not past the hysteresis -> still locked
     d = ctrl.step(R(30.0), R(31.5))
     assert d.lamp_on is False and d.state is State.LOCKOUT
@@ -35,12 +36,19 @@ def test_body_hard_max_latches():
     sup, ctrl = mk(body_max_c=38.5)
     d = ctrl.step(R(39.0), R(25.0))
     assert d.lamp_on is False and sup.latched
+    assert d.latched is True, "a real hard-ceiling breach must never be overridable"
 
 
 def test_both_sensors_stale_forces_off():
     sup, ctrl = mk()
     d = ctrl.step(None, None)
     assert d.lamp_on is False and d.state is State.LOCKOUT
+    # NOT latched: "we don't know" is conservative-by-default, not evidence of
+    # active danger -- this is the one LOCKOUT flavor a manual override is
+    # allowed to substitute for (main.py), e.g. bench-testing the relay with
+    # no sensors live. A real hard-ceiling breach or stuck-on latch (above)
+    # must never behave this way.
+    assert d.latched is False
 
 
 def test_no_body_falls_back_to_ambient_control():
@@ -71,6 +79,7 @@ def test_stuck_on_latch_is_sticky():
     ctrl.step(R(34.0), R(23.0), now=t0)          # turns on
     d = ctrl.step(R(34.0), R(23.0), now=t0 + 20) # 20s continuously on
     assert d.lamp_on is False and sup.latched
+    assert d.latched is True, "stuck-on must never be overridable"
     # ambient is perfectly fine, but sticky latch must NOT auto-release
     d = ctrl.step(R(34.0), R(22.0), now=t0 + 30)
     assert d.lamp_on is False and d.state is State.LOCKOUT

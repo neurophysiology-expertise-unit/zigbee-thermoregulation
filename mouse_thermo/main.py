@@ -188,6 +188,28 @@ async def run(
 
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
+
+        def _handle_async_exception(loop, context) -> None:
+            # An exception raised inside an asyncio CALLBACK (e.g. a serial
+            # transport's connection-lost cleanup) never reaches our own
+            # try/except below -- asyncio's default handler just logs it to
+            # the 'asyncio' logger and keeps running, which on a Windows
+            # ProactorEventLoop can leave the loop limping along with a dead
+            # underlying connection for the full watchdog_timeout_s before
+            # anything reacts. React immediately instead: log loudly and
+            # request a clean shutdown now, rather than waiting up to
+            # watchdog_timeout_s for the watchdog to notice the loop stalled.
+            exc = context.get("exception")
+            log.critical(
+                "UNHANDLED ASYNCIO CALLBACK EXCEPTION -- requesting immediate "
+                "shutdown: %s", context.get("message"), exc_info=exc,
+            )
+            slog.event("asyncio_callback_exception",
+                       message=context.get("message"), error=repr(exc))
+            stop.set()
+
+        loop.set_exception_handler(_handle_async_exception)
+
         try:
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(sig, stop.set)
@@ -230,12 +252,19 @@ async def run(
 
             # Manual override substitutes the CONTROLLER's regulation choice
             # (NORMAL/FALLBACK hysteresis) with a directly-commanded state --
-            # it never substitutes for a safety LOCKOUT. Safety only vetoes,
-            # never commands ON, and that must hold in manual mode too.
+            # it never substitutes for a LATCHED lockout (real hard-ceiling
+            # breach, stuck-on, or a latch not yet released: genuinely
+            # dangerous, never overridable). It MAY substitute for a LOCKOUT
+            # that is only "both sensors stale" (decision.latched is False
+            # there) -- that veto is conservative-by-default, not evidence of
+            # active danger, and operator choice allows overriding it for
+            # bench-testing the relay with no sensors live. Safety only
+            # vetoes, never commands ON, and that must hold in manual mode too
+            # -- hence the distinction is on latched, not on State.LOCKOUT.
             if (
                 manual_override is not None
                 and manual_override.is_set()
-                and decision.state is not State.LOCKOUT
+                and not (decision.state is State.LOCKOUT and decision.latched)
             ):
                 desired = bool(manual_on and manual_on.is_set())
             else:
