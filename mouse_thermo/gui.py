@@ -86,6 +86,10 @@ class MainWindow(QMainWindow):
         self._last_sweep_idx: Optional[int] = None
 
         self._build_ui()
+        # Apply the combo's default selection ("Manual OFF") to the actual
+        # flags -- connecting currentIndexChanged happens after addItem(),
+        # so the initial index-0 selection never fired the handler on its own.
+        self._on_freerun_mode_changed(self.combo_freerun.currentIndex())
 
         self.session_thread = threading.Thread(target=self._run_session, daemon=True)
         self.session_thread.start()
@@ -146,17 +150,19 @@ class MainWindow(QMainWindow):
         freerun_box = QGroupBox("Freerun (overrides the automatic controller, "
                                  "never a safety LOCKOUT)")
         freerun_layout = QHBoxLayout(freerun_box)
-        self.btn_on = QPushButton("Manual ON")
-        self.btn_off = QPushButton("Manual OFF")
-        self.btn_auto = QPushButton("Resume AUTO")
-        self.btn_on.clicked.connect(self._manual_on)
-        self.btn_off.clicked.connect(self._manual_off)
-        self.btn_auto.clicked.connect(self._resume_auto)
-        freerun_layout.addWidget(self.btn_on)
-        freerun_layout.addWidget(self.btn_off)
-        freerun_layout.addWidget(self.btn_auto)
+        freerun_layout.addWidget(QLabel("Lamp mode:"))
+        self.combo_freerun = QComboBox()
+        # "Manual OFF" first/default: on startup you're just watching the
+        # signals come in, lamp held off, before ever engaging AUTO -- not
+        # AUTO-by-default, which immediately evaluates LOCKOUT before you've
+        # had a chance to check anything.
+        self.combo_freerun.addItem("Manual OFF", userData="off")
+        self.combo_freerun.addItem("Manual ON", userData="on")
+        self.combo_freerun.addItem("AUTO (automatic control)", userData="auto")
+        self.combo_freerun.currentIndexChanged.connect(self._on_freerun_mode_changed)
+        freerun_layout.addWidget(self.combo_freerun)
         outer.addWidget(freerun_box)
-        self.freerun_widgets = [self.btn_on, self.btn_off, self.btn_auto]
+        self.freerun_widgets = [self.combo_freerun]
 
         setpoint_box = QGroupBox("Closed-loop setpoints (live-tunable, "
                                   "checked against the hard safety max before applying)")
@@ -254,18 +260,28 @@ class MainWindow(QMainWindow):
         self._last_sweep_idx = None
         self.ax.set_xlim(0.0, seconds)
 
-    # ---- manual control buttons --------------------------------------------
+    # ---- manual control ------------------------------------------------------
 
-    def _manual_on(self) -> None:
-        self.manual_on.set()
-        self.manual_override.set()
+    def _on_freerun_mode_changed(self, index: int) -> None:
+        mode = self.combo_freerun.itemData(index)
+        if mode == "on":
+            self.manual_on.set()
+            self.manual_override.set()
+        elif mode == "off":
+            self.manual_on.clear()
+            self.manual_override.set()
+        else:  # "auto"
+            self.manual_override.clear()
 
-    def _manual_off(self) -> None:
-        self.manual_on.clear()
-        self.manual_override.set()
-
-    def _resume_auto(self) -> None:
-        self.manual_override.clear()
+    def _set_freerun_combo(self, mode: str) -> None:
+        """Update the displayed selection without re-triggering the handler
+        (used when Recording start/stop changes manual_override/manual_on
+        itself, so the dropdown doesn't silently drift out of sync)."""
+        i = self.combo_freerun.findData(mode)
+        if i >= 0 and self.combo_freerun.currentIndex() != i:
+            self.combo_freerun.blockSignals(True)
+            self.combo_freerun.setCurrentIndex(i)
+            self.combo_freerun.blockSignals(False)
 
     # ---- closed-loop setpoints -----------------------------------------------
 
@@ -367,6 +383,7 @@ class MainWindow(QMainWindow):
             # Honest closed-loop data: the automatic controller must be the
             # only thing commanding the lamp.
             self.manual_override.clear()
+            self._set_freerun_combo("auto")
         else:
             # Open loop: freeze whatever the lamp is doing right now (set it
             # via Freerun first if you want a specific state) and hold it --
@@ -375,8 +392,10 @@ class MainWindow(QMainWindow):
             current = self.handle.plug.state()
             if current:
                 self.manual_on.set()
+                self._set_freerun_combo("on")
             else:
                 self.manual_on.clear()
+                self._set_freerun_combo("off")
             self.manual_override.set()
 
         date_str = datetime.datetime.now().strftime("%y%m%d")
