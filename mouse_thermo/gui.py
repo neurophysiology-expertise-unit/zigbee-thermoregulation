@@ -22,7 +22,6 @@ import re
 import sys
 import threading
 import time
-from collections import deque
 from typing import Optional
 
 from PySide6.QtGui import QDoubleValidator
@@ -51,9 +50,11 @@ from .main import SessionHandle, run
 
 log = logging.getLogger("mouse_thermo.gui")
 
-PLOT_WINDOW_OPTIONS_S = (1, 2, 4, 10)  # selectable rolling-plot window widths
+PLOT_WINDOW_OPTIONS_S = (1, 2, 4, 10)  # selectable sweep-plot window widths
 DEFAULT_PLOT_WINDOW_S = 4
-UI_PERIOD_MS = 500  # UI refresh rate; independent of the control loop's own period
+UI_PERIOD_MS = 500     # UI refresh rate; independent of the control loop's own period
+SWEEP_RESOLUTION = 200  # samples across one full sweep, independent of poll rate
+SWEEP_ERASE_FRACTION = 0.05  # fraction of the sweep width blanked just ahead of the cursor
 
 
 class MainWindow(QMainWindow):
@@ -75,10 +76,14 @@ class MainWindow(QMainWindow):
         self._orig_ambient_setpoint_c = cfg.control.ambient_setpoint_c
 
         self._t0 = time.monotonic()
-        self._t_hist: deque = deque()
-        self._body_hist: deque = deque()
-        self._amb_hist: deque = deque()
         self._plot_window_s: float = DEFAULT_PLOT_WINDOW_S
+        # Radar/ECG-monitor style sweep: fixed-size buffers indexed by phase
+        # within the current window, NOT a scrolling history. reset whenever
+        # the window size changes since the index<->time mapping changes.
+        self._sweep_body = [float("nan")] * SWEEP_RESOLUTION
+        self._sweep_amb = [float("nan")] * SWEEP_RESOLUTION
+        self._sweep_xs = [i / SWEEP_RESOLUTION * DEFAULT_PLOT_WINDOW_S for i in range(SWEEP_RESOLUTION)]
+        self._last_sweep_idx: Optional[int] = None
 
         self._build_ui()
 
@@ -229,10 +234,17 @@ class MainWindow(QMainWindow):
 
         self.fig = Figure(figsize=(6, 3))
         self.ax = self.fig.add_subplot(111)
-        self.ax.set_xlabel("time (s)")
+        # Radar/monitor look: no box, no x-axis -- position along x is the
+        # sweep itself, not a labeled time axis. Keep only the y-axis, since
+        # that's the one thing you actually read a value off of.
+        for side in ("top", "right", "bottom"):
+            self.ax.spines[side].set_visible(False)
+        self.ax.xaxis.set_visible(False)
         self.ax.set_ylabel("temp (C)")
         (self.line_body,) = self.ax.plot([], [], label="body")
         (self.line_amb,) = self.ax.plot([], [], label="ambient")
+        self.cursor_line = self.ax.axvline(0.0, color="0.5", linewidth=1, linestyle="--")
+        self.ax.set_xlim(0.0, self._plot_window_s)
         self.ax.legend(loc="upper right")
         self.canvas = FigureCanvas(self.fig)
         outer.addWidget(self.canvas)
@@ -241,6 +253,13 @@ class MainWindow(QMainWindow):
 
     def _set_plot_window(self, seconds: float) -> None:
         self._plot_window_s = seconds
+        # The index<->time mapping changes with the window width -- old
+        # buffer contents would plot at the wrong x position otherwise.
+        self._sweep_body = [float("nan")] * SWEEP_RESOLUTION
+        self._sweep_amb = [float("nan")] * SWEEP_RESOLUTION
+        self._sweep_xs = [i / SWEEP_RESOLUTION * seconds for i in range(SWEEP_RESOLUTION)]
+        self._last_sweep_idx = None
+        self.ax.set_xlim(0.0, seconds)
 
     # ---- manual control buttons --------------------------------------------
 
@@ -439,22 +458,45 @@ class MainWindow(QMainWindow):
         else:
             self.lbl_mode.setText("AUTO")
 
-        t = now - self._t0
-        self._t_hist.append(t)
-        self._body_hist.append(body.value if body is not None else float("nan"))
-        self._amb_hist.append(amb.value if amb is not None else float("nan"))
-        # Deliberately only the selected recent window, not the whole
-        # session -- drop anything older than that off the left, every tick.
-        while self._t_hist and t - self._t_hist[0] > self._plot_window_s:
-            self._t_hist.popleft()
-            self._body_hist.popleft()
-            self._amb_hist.popleft()
+        # Radar/ECG-monitor sweep: position within the CURRENT cycle of the
+        # window, not elapsed session time -- wraps back to 0 every
+        # plot_window_s, like a line sweeping the screen left to right.
+        window = self._plot_window_s
+        phase = (now - self._t0) % window / window  # 0..1
+        idx = int(phase * SWEEP_RESOLUTION) % SWEEP_RESOLUTION
 
-        self.line_body.set_data(self._t_hist, self._body_hist)
-        self.line_amb.set_data(self._t_hist, self._amb_hist)
-        self.ax.set_xlim(max(0.0, t - self._plot_window_s), max(t, self._plot_window_s))
+        body_val = body.value if body is not None else float("nan")
+        amb_val = amb.value if amb is not None else float("nan")
+
+        # The cursor can advance several buffer slots between UI ticks (tick
+        # period vs. window/resolution) -- fill the WHOLE span it swept
+        # since last tick with the current value, not just the single
+        # landing index, or most of the buffer stays stale between ticks
+        # and the trace reads as disconnected fragments instead of a line.
+        if self._last_sweep_idx is None:
+            fill = [idx]
+        else:
+            span = (idx - self._last_sweep_idx) % SWEEP_RESOLUTION or SWEEP_RESOLUTION
+            fill = [(self._last_sweep_idx + 1 + k) % SWEEP_RESOLUTION for k in range(span)]
+        for j in fill:
+            self._sweep_body[j] = body_val
+            self._sweep_amb[j] = amb_val
+        self._last_sweep_idx = idx
+
+        # Blank a small span just ahead of the cursor -- that gap-ahead is
+        # what makes it read as a sweep erasing the previous lap's trace
+        # ahead of the beam, not a static plot.
+        erase_n = max(1, int(SWEEP_RESOLUTION * SWEEP_ERASE_FRACTION))
+        for k in range(1, erase_n + 1):
+            j = (idx + k) % SWEEP_RESOLUTION
+            self._sweep_body[j] = float("nan")
+            self._sweep_amb[j] = float("nan")
+
+        self.line_body.set_data(self._sweep_xs, self._sweep_body)
+        self.line_amb.set_data(self._sweep_xs, self._sweep_amb)
+        self.cursor_line.set_xdata([phase * window, phase * window])
         self.ax.relim()
-        self.ax.autoscale_view(scalex=False)  # y only; x is the fixed sweep window above
+        self.ax.autoscale_view(scalex=False)  # y only; x is the fixed window set on resize
         self.canvas.draw_idle()
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
