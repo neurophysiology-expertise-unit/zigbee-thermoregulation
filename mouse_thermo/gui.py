@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime
 import logging
 import sys
 import threading
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QRadioButton,
     QVBoxLayout,
     QWidget,
 )
@@ -119,19 +121,40 @@ class MainWindow(QMainWindow):
             grid.addWidget(lbl, i, 1)
         outer.addLayout(grid)
 
-        btn_box = QGroupBox("Manual control (overrides the automatic controller, "
-                             "never a safety LOCKOUT)")
-        btn_layout = QHBoxLayout(btn_box)
+        freerun_box = QGroupBox("Freerun (overrides the automatic controller, "
+                                 "never a safety LOCKOUT)")
+        freerun_layout = QHBoxLayout(freerun_box)
         self.btn_on = QPushButton("Manual ON")
         self.btn_off = QPushButton("Manual OFF")
         self.btn_auto = QPushButton("Resume AUTO")
         self.btn_on.clicked.connect(self._manual_on)
         self.btn_off.clicked.connect(self._manual_off)
         self.btn_auto.clicked.connect(self._resume_auto)
-        btn_layout.addWidget(self.btn_on)
-        btn_layout.addWidget(self.btn_off)
-        btn_layout.addWidget(self.btn_auto)
-        outer.addWidget(btn_box)
+        freerun_layout.addWidget(self.btn_on)
+        freerun_layout.addWidget(self.btn_off)
+        freerun_layout.addWidget(self.btn_auto)
+        outer.addWidget(freerun_box)
+        self.freerun_widgets = [self.btn_on, self.btn_off, self.btn_auto]
+
+        rec_box = QGroupBox("Recording")
+        rec_layout = QVBoxLayout(rec_box)
+        mode_row = QHBoxLayout()
+        self.radio_closed = QRadioButton("Closed loop (automatic control)")
+        self.radio_open = QRadioButton("Open loop (fixed lamp state, no feedback)")
+        self.radio_closed.setChecked(True)
+        mode_row.addWidget(self.radio_closed)
+        mode_row.addWidget(self.radio_open)
+        rec_layout.addLayout(mode_row)
+
+        rec_btn_row = QHBoxLayout()
+        self.btn_record = QPushButton("Start Recording")
+        self.btn_record.clicked.connect(self._toggle_recording)
+        self.lbl_recording = QLabel("not recording")
+        rec_btn_row.addWidget(self.btn_record)
+        rec_btn_row.addWidget(self.lbl_recording)
+        rec_layout.addLayout(rec_btn_row)
+        outer.addWidget(rec_box)
+        self.recording_mode_widgets = [self.radio_closed, self.radio_open]
 
         self.fig = Figure(figsize=(6, 3))
         self.ax = self.fig.add_subplot(111)
@@ -156,6 +179,51 @@ class MainWindow(QMainWindow):
     def _resume_auto(self) -> None:
         self.manual_override.clear()
 
+    # ---- recording ----------------------------------------------------------
+
+    def _toggle_recording(self) -> None:
+        if self.handle is None:
+            return
+        if self.handle.recording.active:
+            self._stop_recording()
+        else:
+            self._start_recording()
+
+    def _start_recording(self) -> None:
+        mode = "closed_loop" if self.radio_closed.isChecked() else "open_loop"
+
+        if mode == "closed_loop":
+            # Honest closed-loop data: the automatic controller must be the
+            # only thing commanding the lamp.
+            self.manual_override.clear()
+        else:
+            # Open loop: freeze whatever the lamp is doing right now (set it
+            # via Freerun first if you want a specific state) and hold it --
+            # no automatic regulation, no further manual changes once
+            # recording starts.
+            current = self.handle.plug.state()
+            if current:
+                self.manual_on.set()
+            else:
+                self.manual_on.clear()
+            self.manual_override.set()
+
+        ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        path = f"recordings/{ts}_{mode}.jsonl"
+        self.handle.recording.start(path, mode, self.cfg.to_dict())
+
+        for w in self.freerun_widgets + self.recording_mode_widgets:
+            w.setEnabled(False)
+        self.btn_record.setText("Stop Recording")
+        self.lbl_recording.setText(f"recording [{mode}] -> {path}")
+
+    def _stop_recording(self) -> None:
+        self.handle.recording.stop()
+        for w in self.freerun_widgets + self.recording_mode_widgets:
+            w.setEnabled(True)
+        self.btn_record.setText("Start Recording")
+        self.lbl_recording.setText("not recording")
+
     # ---- polling tick -------------------------------------------------------
 
     def _tick(self) -> None:
@@ -179,7 +247,12 @@ class MainWindow(QMainWindow):
         if decision is not None:
             self.lbl_state.setText(decision.state.value)
             self.lbl_reason.setText(decision.reason)
-        self.lbl_mode.setText("MANUAL OVERRIDE" if self.manual_override.is_set() else "AUTO")
+        if self.handle.recording.active:
+            self.lbl_mode.setText(f"RECORDING [{self.handle.recording.mode}]")
+        elif self.manual_override.is_set():
+            self.lbl_mode.setText("FREERUN (manual override)")
+        else:
+            self.lbl_mode.setText("AUTO")
 
         t = now - self._t0
         self._t_hist.append(t)
@@ -198,6 +271,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
         if self.handle is not None:
+            if self.handle.recording.active:
+                self.handle.recording.stop()
             self.handle.request_shutdown()
         event.accept()
 
