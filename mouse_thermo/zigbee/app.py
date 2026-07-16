@@ -104,6 +104,20 @@ class ZigbeePlug(Plug):
 
         self.dev.add_listener(_PlugListener(self))
 
+        # Seed _confirmed with an explicit read. Attribute reports alone leave
+        # state() as None (== "unknown") until the plug happens to send one,
+        # which can be up to max_interval even though the value is readable
+        # right now -- so the UI shows "unknown" for no good reason.
+        try:
+            rd = await onoff.read_attributes(["on_off"])
+            if OnOff.AttributeDefs.on_off.id in rd[0] or "on_off" in rd[0]:
+                val = rd[0].get("on_off", rd[0].get(OnOff.AttributeDefs.on_off.id))
+                self._confirmed = bool(val)
+                log.info("plug initial on_off state read: %s", self._confirmed)
+        except Exception:
+            log.warning("could not read initial plug on_off state (non-fatal); "
+                        "state stays unknown until the first report", exc_info=True)
+
     async def set_async(self, on: bool) -> None:
         onoff = self.ep.in_clusters[OnOff.cluster_id]
         # Let exceptions propagate: a failed command must be visible.
@@ -166,6 +180,22 @@ class ZigbeeSensorListener:
             TemperatureMeasurement.AttributeDefs.measured_value.id,
             min_interval=5, max_interval=30, reportable_change=5,  # 0.05 C
         )
+
+        # Seed the channel with an explicit read, for the same reason as the
+        # plug's on_off above: waiting only for the device's own report can
+        # leave ambient showing "stale/unknown" for minutes even though the
+        # value is readable right now. Non-fatal -- a sleepy device may
+        # simply not answer, which is exactly why it isn't a safety sensor.
+        try:
+            rd = await cl.read_attributes(["measured_value"])
+            val = rd[0].get("measured_value",
+                            rd[0].get(TemperatureMeasurement.AttributeDefs.measured_value.id))
+            if val is not None:
+                self.ch.push(val / 100.0, meta={"src": "zigbee_snzb02_initial_read"})
+                log.info("ambient sensor initial read: %.2fC", val / 100.0)
+        except Exception:
+            log.warning("could not read initial ambient value (non-fatal); "
+                        "waiting for the device's own report", exc_info=True)
 
     def last_seen_age(self, now: float) -> Optional[float]:
         """`now` must be time.time(), not time.monotonic() -- see Plug's
