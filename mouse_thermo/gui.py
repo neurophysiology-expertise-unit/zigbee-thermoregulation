@@ -28,8 +28,8 @@ from PySide6.QtGui import QDoubleValidator
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QApplication,
-    QButtonGroup,
     QCheckBox,
+    QComboBox,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -37,7 +37,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QPushButton,
-    QRadioButton,
     QVBoxLayout,
     QWidget,
 )
@@ -55,6 +54,7 @@ DEFAULT_PLOT_WINDOW_S = 4
 UI_PERIOD_MS = 500     # UI refresh rate; independent of the control loop's own period
 SWEEP_RESOLUTION = 200  # samples across one full sweep, independent of poll rate
 SWEEP_ERASE_FRACTION = 0.05  # fraction of the sweep width blanked just ahead of the cursor
+PLOT_Y_MIN, PLOT_Y_MAX = 24.0, 45.0  # fixed temp axis -- not autoscaled to the data
 
 
 class MainWindow(QMainWindow):
@@ -194,11 +194,11 @@ class MainWindow(QMainWindow):
         rec_layout.addLayout(animal_row)
 
         mode_row = QHBoxLayout()
-        self.radio_closed = QRadioButton("Closed loop (automatic control)")
-        self.radio_open = QRadioButton("Open loop (fixed lamp state, no feedback)")
-        self.radio_closed.setChecked(True)
-        mode_row.addWidget(self.radio_closed)
-        mode_row.addWidget(self.radio_open)
+        mode_row.addWidget(QLabel("Loop mode:"))
+        self.combo_loop_mode = QComboBox()
+        self.combo_loop_mode.addItem("Closed loop (automatic control)", userData="closed_loop")
+        self.combo_loop_mode.addItem("Open loop (fixed lamp state, no feedback)", userData="open_loop")
+        mode_row.addWidget(self.combo_loop_mode)
         rec_layout.addLayout(mode_row)
 
         rec_btn_row = QHBoxLayout()
@@ -209,27 +209,19 @@ class MainWindow(QMainWindow):
         rec_btn_row.addWidget(self.lbl_recording)
         rec_layout.addLayout(rec_btn_row)
         outer.addWidget(rec_box)
-        self.recording_mode_widgets = [self.radio_closed, self.radio_open, self.edit_animal_id]
+        self.recording_mode_widgets = [self.combo_loop_mode, self.edit_animal_id]
 
         window_box = QGroupBox("Plot window (recent-only, not the whole session)")
         window_layout = QHBoxLayout(window_box)
-        self.plot_window_group = QButtonGroup(self)
-        self.plot_window_group.setExclusive(True)
-        default_btn = None
+        window_layout.addWidget(QLabel("Window:"))
+        self.combo_plot_window = QComboBox()
         for seconds in PLOT_WINDOW_OPTIONS_S:
-            btn = QPushButton(f"{seconds}s")
-            btn.setCheckable(True)
-            btn.clicked.connect(lambda checked, s=seconds: self._set_plot_window(s))
-            self.plot_window_group.addButton(btn)
-            window_layout.addWidget(btn)
-            if seconds == DEFAULT_PLOT_WINDOW_S:
-                default_btn = btn
-        # Must setChecked() AFTER every button has joined the exclusive
-        # QButtonGroup -- doing it during construction (before the group had
-        # more than one member) left the wrong button visually highlighted,
-        # even though self._plot_window_s itself was already correct.
-        if default_btn is not None:
-            default_btn.setChecked(True)
+            self.combo_plot_window.addItem(f"{seconds}s", userData=seconds)
+        self.combo_plot_window.setCurrentIndex(PLOT_WINDOW_OPTIONS_S.index(DEFAULT_PLOT_WINDOW_S))
+        self.combo_plot_window.currentIndexChanged.connect(
+            lambda i: self._set_plot_window(self.combo_plot_window.itemData(i))
+        )
+        window_layout.addWidget(self.combo_plot_window)
         outer.addWidget(window_box)
 
         self.fig = Figure(figsize=(6, 3))
@@ -245,6 +237,7 @@ class MainWindow(QMainWindow):
         (self.line_amb,) = self.ax.plot([], [], label="ambient")
         self.cursor_line = self.ax.axvline(0.0, color="0.5", linewidth=1, linestyle="--")
         self.ax.set_xlim(0.0, self._plot_window_s)
+        self.ax.set_ylim(PLOT_Y_MIN, PLOT_Y_MAX)  # fixed -- not autoscaled to the data
         self.ax.legend(loc="upper right")
         self.canvas = FigureCanvas(self.fig)
         outer.addWidget(self.canvas)
@@ -368,7 +361,7 @@ class MainWindow(QMainWindow):
             self.lbl_recording.setStyleSheet("color: red; font-weight: bold;")
             return
 
-        mode = "closed_loop" if self.radio_closed.isChecked() else "open_loop"
+        mode = self.combo_loop_mode.currentData()
 
         if mode == "closed_loop":
             # Honest closed-loop data: the automatic controller must be the
@@ -495,8 +488,8 @@ class MainWindow(QMainWindow):
         self.line_body.set_data(self._sweep_xs, self._sweep_body)
         self.line_amb.set_data(self._sweep_xs, self._sweep_amb)
         self.cursor_line.set_xdata([phase * window, phase * window])
-        self.ax.relim()
-        self.ax.autoscale_view(scalex=False)  # y only; x is the fixed window set on resize
+        # No relim()/autoscale_view() -- both axes are fixed (x to the sweep
+        # window, y to PLOT_Y_MIN/MAX), so nothing needs to move each tick.
         self.canvas.draw_idle()
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
