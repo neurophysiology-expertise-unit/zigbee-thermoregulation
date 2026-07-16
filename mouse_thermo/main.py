@@ -75,7 +75,17 @@ async def run(cfg: Config, max_seconds: Optional[float] = None) -> int:
 
         if not cfg.simulate and cfg.zigbee.sensor_ieee:
             listener = ZigbeeSensorListener(app, cfg.zigbee, amb_ch)
-            await listener.configure()
+            try:
+                await listener.configure()
+            except Exception:
+                # The SNZB-02 is documented (CLAUDE.md) as a fallback/logging
+                # input, not the primary safety sensor -- a bind hiccup on a
+                # sleepy battery end device shouldn't take down the whole
+                # run. Left unconfigured, amb_ch just never gets pushed to
+                # and stays permanently stale, which the controller already
+                # treats as "unknown -> unsafe" (invariant 2), i.e. the
+                # correct fail-cold degradation, not a crash.
+                log.exception("ambient sensor bind failed; continuing without it")
 
         # ---- optional sensor threads -------------------------------------
         if cfg.rfid.enabled:
