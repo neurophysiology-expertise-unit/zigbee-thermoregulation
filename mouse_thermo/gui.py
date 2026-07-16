@@ -25,7 +25,7 @@ import time
 from typing import Optional
 
 from PySide6.QtGui import QDoubleValidator
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -70,6 +70,10 @@ class MainWindow(QMainWindow):
         # exactly this cross-thread pattern (see main.py's run()).
         self.manual_override = threading.Event()
         self.manual_on = threading.Event()
+        # Deliberately never read from config, never persisted, always
+        # starts cleared -- an explicit per-session operator acknowledgement,
+        # not a setting that could silently carry into a later real run.
+        self.safety_bypass = threading.Event()
 
         # Captured before any GUI override, so unchecking "use custom
         # setpoints" has something to revert to.
@@ -107,6 +111,7 @@ class MainWindow(QMainWindow):
                 self.cfg,
                 manual_override=self.manual_override,
                 manual_on=self.manual_on,
+                safety_bypass=self.safety_bypass,
                 on_ready=self._on_ready,
             ))
         except Exception:
@@ -130,6 +135,23 @@ class MainWindow(QMainWindow):
         self.btn_browse_output.clicked.connect(self._browse_output_dir)
         output_row.addWidget(self.btn_browse_output)
         outer.addLayout(output_row)
+
+        bypass_row = QHBoxLayout()
+        self.chk_safety_bypass = QCheckBox("Safety bypass (TESTING ONLY) -- lets manual "
+                                            "control override even a hard-ceiling lockout")
+        self.chk_safety_bypass.toggled.connect(self._on_safety_bypass_toggled)
+        bypass_row.addWidget(self.chk_safety_bypass)
+        outer.addLayout(bypass_row)
+
+        self.lbl_bypass_banner = QLabel(
+            "⚠ SAFETY BYPASS ACTIVE -- hard-ceiling lockout can be overridden ⚠"
+        )
+        self.lbl_bypass_banner.setAlignment(Qt.AlignCenter)
+        self.lbl_bypass_banner.setStyleSheet(
+            "background-color: red; color: white; font-weight: bold; padding: 6px;"
+        )
+        self.lbl_bypass_banner.setVisible(False)
+        outer.addWidget(self.lbl_bypass_banner)
 
         grid = QGridLayout()
         self.lbl_body = QLabel("--")
@@ -261,6 +283,15 @@ class MainWindow(QMainWindow):
         self.ax.legend(loc="upper right")
         self.canvas = FigureCanvas(self.fig)
         outer.addWidget(self.canvas)
+
+    # ---- safety bypass --------------------------------------------------------
+
+    def _on_safety_bypass_toggled(self, checked: bool) -> None:
+        if checked:
+            self.safety_bypass.set()
+        else:
+            self.safety_bypass.clear()
+        self.lbl_bypass_banner.setVisible(checked)
 
     # ---- plot window --------------------------------------------------------
 
@@ -470,7 +501,12 @@ class MainWindow(QMainWindow):
 
         raw = self.handle.rfid_source.last_raw_reading if self.handle.rfid_source is not None else None
 
+        # Shared by both the label and the plot line below -- the plot was
+        # only ever drawing the validated value, so the raw fallback never
+        # showed up there even after it started showing in the label.
+        body_display_value: Optional[float] = None
         if body is not None:
+            body_display_value = body.value
             self.lbl_body.setText(f"{body.value:.2f}")
             self.lbl_body.setStyleSheet("")
         elif raw is not None:
@@ -481,6 +517,7 @@ class MainWindow(QMainWindow):
             # labeled, so bring-up testing can see the reader is alive
             # without touching the actual plausibility gate.
             tag_id, temp_c, _ = raw
+            body_display_value = temp_c
             self.lbl_body.setText(f"{temp_c:.2f} (raw, NOT validated/used)")
             self.lbl_body.setStyleSheet("color: darkorange;")
         else:
@@ -516,6 +553,8 @@ class MainWindow(QMainWindow):
             self.lbl_mode.setText("FREERUN (manual override)")
         else:
             self.lbl_mode.setText("AUTO")
+        if self.safety_bypass.is_set():
+            self.lbl_mode.setText(self.lbl_mode.text() + "  [SAFETY BYPASS ACTIVE]")
 
         # Radar/ECG-monitor sweep: position within the CURRENT cycle of the
         # window, not elapsed session time -- wraps back to 0 every
@@ -524,7 +563,7 @@ class MainWindow(QMainWindow):
         phase = (now - self._t0) % window / window  # 0..1
         idx = int(phase * SWEEP_RESOLUTION) % SWEEP_RESOLUTION
 
-        body_val = body.value if body is not None else float("nan")
+        body_val = body_display_value if body_display_value is not None else float("nan")
         amb_val = amb.value if amb is not None else float("nan")
 
         # The cursor can advance several buffer slots between UI ticks (tick

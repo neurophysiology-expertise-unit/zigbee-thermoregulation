@@ -103,6 +103,7 @@ async def run(
     max_seconds: Optional[float] = None,
     manual_override: Optional[threading.Event] = None,
     manual_on: Optional[threading.Event] = None,
+    safety_bypass: Optional[threading.Event] = None,
     on_ready: Optional[Callable[[SessionHandle], None]] = None,
 ) -> int:
     cfg.validate()
@@ -267,19 +268,26 @@ async def run(
 
             # Manual override substitutes the CONTROLLER's regulation choice
             # (NORMAL/FALLBACK hysteresis) with a directly-commanded state --
-            # it never substitutes for a LATCHED lockout (real hard-ceiling
-            # breach, stuck-on, or a latch not yet released: genuinely
-            # dangerous, never overridable). It MAY substitute for a LOCKOUT
-            # that is only "both sensors stale" (decision.latched is False
-            # there) -- that veto is conservative-by-default, not evidence of
-            # active danger, and operator choice allows overriding it for
-            # bench-testing the relay with no sensors live. Safety only
-            # vetoes, never commands ON, and that must hold in manual mode too
-            # -- hence the distinction is on latched, not on State.LOCKOUT.
+            # by default it never substitutes for a LATCHED lockout (real
+            # hard-ceiling breach, stuck-on, or a latch not yet released).
+            # It MAY substitute for a LOCKOUT that is only "both sensors
+            # stale" (decision.latched is False there) -- that veto is
+            # conservative-by-default, not evidence of active danger, and
+            # operator choice allows overriding it for bench-testing the
+            # relay with no sensors live.
+            #
+            # safety_bypass is the one deliberate exception: an explicit,
+            # session-only (never persisted, never default-on) operator
+            # acknowledgement that lets manual override through EVEN a
+            # latched hard-ceiling lockout, for closely-supervised bench
+            # testing. Every tick it's active is recorded (sample_kwargs
+            # below) so it's never ambiguous in the data afterward whether
+            # this was engaged.
+            bypass_active = bool(safety_bypass and safety_bypass.is_set())
             if (
                 manual_override is not None
                 and manual_override.is_set()
-                and not (decision.state is State.LOCKOUT and decision.latched)
+                and (bypass_active or not (decision.state is State.LOCKOUT and decision.latched))
             ):
                 desired = bool(manual_on and manual_on.is_set())
             else:
@@ -301,6 +309,7 @@ async def run(
                 state=decision.state.value,
                 reason=decision.reason,
                 manual_override=bool(manual_override and manual_override.is_set()),
+                safety_bypass_active=bypass_active,
                 body_setpoint_c=cfg.control.body_setpoint_c,
                 ambient_setpoint_c=cfg.control.ambient_setpoint_c,
             )
