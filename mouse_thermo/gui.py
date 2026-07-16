@@ -17,6 +17,8 @@ import argparse
 import asyncio
 import datetime
 import logging
+import os
+import re
 import sys
 import threading
 import time
@@ -175,6 +177,14 @@ class MainWindow(QMainWindow):
 
         rec_box = QGroupBox("Recording")
         rec_layout = QVBoxLayout(rec_box)
+
+        animal_row = QHBoxLayout()
+        animal_row.addWidget(QLabel("Animal ID:"))
+        self.edit_animal_id = QLineEdit()
+        self.edit_animal_id.setPlaceholderText("e.g. CA001")
+        animal_row.addWidget(self.edit_animal_id)
+        rec_layout.addLayout(animal_row)
+
         mode_row = QHBoxLayout()
         self.radio_closed = QRadioButton("Closed loop (automatic control)")
         self.radio_open = QRadioButton("Open loop (fixed lamp state, no feedback)")
@@ -191,7 +201,7 @@ class MainWindow(QMainWindow):
         rec_btn_row.addWidget(self.lbl_recording)
         rec_layout.addLayout(rec_btn_row)
         outer.addWidget(rec_box)
-        self.recording_mode_widgets = [self.radio_closed, self.radio_open]
+        self.recording_mode_widgets = [self.radio_closed, self.radio_open, self.edit_animal_id]
 
         self.fig = Figure(figsize=(6, 3))
         self.ax = self.fig.add_subplot(111)
@@ -288,7 +298,28 @@ class MainWindow(QMainWindow):
         else:
             self._start_recording()
 
+    @staticmethod
+    def _sanitize_animal_id(raw: str) -> str:
+        raw = raw.strip()
+        return re.sub(r'[^A-Za-z0-9_-]', "", raw)
+
+    @staticmethod
+    def _next_session_number(date_str: str, animal_id: str) -> int:
+        pattern = re.compile(rf"^{re.escape(date_str)}_{re.escape(animal_id)}_(\d+)\.jsonl$")
+        try:
+            existing = os.listdir("recordings")
+        except FileNotFoundError:
+            return 1
+        nums = [int(m.group(1)) for name in existing if (m := pattern.match(name))]
+        return max(nums, default=0) + 1
+
     def _start_recording(self) -> None:
+        animal_id = self._sanitize_animal_id(self.edit_animal_id.text())
+        if not animal_id:
+            self.lbl_recording.setText("enter an Animal ID before recording")
+            self.lbl_recording.setStyleSheet("color: red; font-weight: bold;")
+            return
+
         mode = "closed_loop" if self.radio_closed.isChecked() else "open_loop"
 
         if mode == "closed_loop":
@@ -307,14 +338,16 @@ class MainWindow(QMainWindow):
                 self.manual_on.clear()
             self.manual_override.set()
 
-        ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        path = f"recordings/{ts}_{mode}.jsonl"
+        date_str = datetime.datetime.now().strftime("%y%m%d")
+        session_num = self._next_session_number(date_str, animal_id)
+        path = f"recordings/{date_str}_{animal_id}_{session_num}.jsonl"
         self.handle.recording.start(path, mode, self.cfg.to_dict())
 
         for w in self.freerun_widgets + self.recording_mode_widgets:
             w.setEnabled(False)
         self.btn_record.setText("Stop Recording")
         self.lbl_recording.setText(f"recording [{mode}] -> {path}")
+        self.lbl_recording.setStyleSheet("")
 
     def _stop_recording(self) -> None:
         self.handle.recording.stop()
