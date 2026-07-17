@@ -24,12 +24,13 @@ class SessionLogger:
                lamp_cmd, lamp_state, power_w, state, reason,
                controller_wanted=None, manual_override=False,
                record_mode=None, body_setpoint_c=None, ambient_setpoint_c=None,
-               safety_bypass_active=False) -> None:
+               safety_bypass_active=False, lamp_commanded=None) -> None:
         self.write({
             "type": "sample",
             "body_c": body, "body_age_s": body_age,
             "ambient_c": ambient, "ambient_age_s": ambient_age,
-            "lamp_cmd": lamp_cmd, "lamp_state": lamp_state, "power_w": power_w,
+            "lamp_cmd": lamp_cmd, "lamp_state": lamp_state,
+            "lamp_commanded": lamp_commanded, "power_w": power_w,
             "state": state, "reason": reason,
             "controller_wanted": controller_wanted, "manual_override": manual_override,
             "record_mode": record_mode,

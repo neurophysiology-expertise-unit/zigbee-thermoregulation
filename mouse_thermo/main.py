@@ -33,6 +33,11 @@ from .watchdog import Watchdog
 
 log = logging.getLogger("mouse_thermo")
 
+# Re-send the current lamp command at least this often even if nothing
+# changed. Zigbee delivery is not guaranteed, so a dropped command would
+# otherwise persist silently until `desired` happened to change again.
+COMMAND_REASSERT_S = 20.0
+
 
 class RecordingBox:
     """Thread-safe start/stop for a dedicated recording file, mirrored
@@ -244,6 +249,7 @@ async def run(
             log.info("auto-stop armed for %.1fs from now", max_seconds)
 
         log.info("control loop starting (period %.1fs)", cfg.control.loop_period_s)
+        last_cmd_sent_t = -1e9  # forces a command on the very first tick
 
         handle = SessionHandle(loop=loop, stop=stop, body_ch=body_ch, amb_ch=amb_ch, plug=plug, cfg=cfg,
                                 ambient_sensor=ambient_listener, rfid_source=rfid_source)
@@ -293,8 +299,24 @@ async def run(
             else:
                 desired = decision.lamp_on
 
-            if desired != plug.state():
+            # Compare against what we last COMMANDED, never against
+            # plug.state() (the last CONFIRMED report). A device that stops
+            # reporting -- or never reports at all -- freezes state(), and
+            # "desired != state()" then silently skips real commands. Found
+            # on real hardware: the plug never sent on_off/power reports, so
+            # state() stayed at its startup-seeded False; when safety later
+            # demanded OFF, desired(False) == state(False) so NO OFF COMMAND
+            # WAS SENT and the lamp stayed physically ON while the software
+            # reported it off.
+            #
+            # Also re-assert periodically even when nothing changed, so a
+            # command that was lost in transit (Zigbee is not guaranteed
+            # delivery) self-heals on the next tick instead of persisting
+            # until something else happens to change `desired`.
+            reassert_due = (now - last_cmd_sent_t) >= COMMAND_REASSERT_S
+            if desired != plug.commanded() or reassert_due:
                 await plug.set_async(desired)
+                last_cmd_sent_t = now
 
             wd.kick()
             sample_kwargs = dict(
@@ -305,6 +327,7 @@ async def run(
                 lamp_cmd=desired,
                 controller_wanted=decision.lamp_on,
                 lamp_state=plug.state(),
+                lamp_commanded=plug.commanded(),
                 power_w=plug.power_w(),
                 state=decision.state.value,
                 reason=decision.reason,

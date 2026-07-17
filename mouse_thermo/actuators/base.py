@@ -24,7 +24,22 @@ class Plug(ABC):
 
     @abstractmethod
     def state(self) -> Optional[bool]:
-        """Last CONFIRMED state reported by the device, None if unknown."""
+        """Last CONFIRMED state reported by the device, None if unknown.
+
+        NEVER use this to decide whether a command needs sending -- it only
+        updates when the device sends a report, and a device that never
+        reports leaves it frozen forever. Deciding "desired != state()" then
+        silently skips real commands (found on real hardware: a lamp left
+        physically ON while this said False). Use commanded() for that, and
+        keep state() for display/actuator-feedback only.
+        """
+
+    def commanded(self) -> Optional[bool]:
+        """Last value we actually COMMANDED, regardless of whether the device
+        ever confirmed it. None until the first command is sent. This -- not
+        state() -- is what the control loop must compare against so a command
+        is never skipped because a confirmation is stale or absent."""
+        return None
 
     def power_w(self) -> Optional[float]:
         """Actuator feedback: did the lamp actually draw current? None if unsupported."""

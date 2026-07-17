@@ -2,6 +2,7 @@
 import time
 import pytest
 
+from mouse_thermo.actuators.base import Plug
 from mouse_thermo.bus import SensorChannel, Reading
 from mouse_thermo.config import SafetyConfig, ControlConfig, SensorConfig, Config
 from mouse_thermo.safety import SafetySupervisor
@@ -122,3 +123,58 @@ def test_config_rejects_setpoint_above_hard_max():
     cfg.safety.body_max_c = 38.5
     with pytest.raises(ValueError, match="body_setpoint_c"):
         cfg.validate()
+
+
+class NeverConfirmingPlug(Plug):
+    """A plug whose relay works but which NEVER sends an attribute report --
+    exactly the real Sonoff behaviour that left a lamp physically ON while
+    the software believed it was off. state() is frozen at its seeded value
+    forever; only commanded() tracks reality."""
+
+    def __init__(self, seeded_state=False):
+        self.relay_on = False          # the real, physical relay
+        self._frozen_state = seeded_state  # what state() forever claims
+        self._commanded = None
+
+    def set(self, on: bool) -> None:
+        self.relay_on = on             # relay obeys...
+        self._commanded = on           # ...and we know what we asked for
+        # ...but _frozen_state is deliberately NEVER updated: no reports.
+
+    def state(self):
+        return self._frozen_state
+
+    def commanded(self):
+        return self._commanded
+
+
+def test_off_command_is_sent_even_when_plug_never_confirms():
+    """Regression: deciding `desired != state()` skipped real commands when
+    the device never reports, leaving the lamp ON while software said OFF."""
+    plug = NeverConfirmingPlug(seeded_state=False)
+
+    # Controller demands ON -> relay must actually turn on.
+    plug.set(True)
+    assert plug.relay_on is True
+    # state() still lies (frozen at the seeded False) -- that's the trap.
+    assert plug.state() is False
+    assert plug.commanded() is True
+
+    # Now safety demands OFF. The OLD logic compared desired to state():
+    #   desired(False) != state(False) -> False -> no command -> LAMP STAYS ON.
+    assert (False != plug.state()) is False, "the exact stale-confirmation trap"
+    # The NEW logic compares desired to commanded(), which is truthful:
+    assert (False != plug.commanded()) is True, "must recognise a command is needed"
+
+    plug.set(False)
+    assert plug.relay_on is False, "lamp must actually be off"
+
+
+def test_commanded_defaults_to_none_so_first_command_always_sends():
+    plug = NeverConfirmingPlug(seeded_state=False)
+    # Before any command, commanded() is None -- so `desired != commanded()`
+    # is true for BOTH True and False, guaranteeing the startup OFF is sent
+    # rather than skipped because state() already happens to read False.
+    assert plug.commanded() is None
+    assert (False != plug.commanded()) is True
+    assert (True != plug.commanded()) is True

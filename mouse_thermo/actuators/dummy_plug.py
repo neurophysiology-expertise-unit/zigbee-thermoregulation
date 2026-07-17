@@ -8,6 +8,7 @@ from .base import Plug
 class DummyPlug(Plug):
     def __init__(self, ambient_start=22.0, body_start=36.0):
         self._on = False
+        self._commanded = None
         self.ambient = ambient_start
         self.body = body_start
         self.log = []
@@ -16,9 +17,15 @@ class DummyPlug(Plug):
         if on != self._on:
             self.log.append((time.monotonic(), on))
         self._on = on
+        self._commanded = on
 
     def state(self) -> Optional[bool]:
         return self._on
+
+    def commanded(self) -> Optional[bool]:
+        # A simulated plug always "confirms" instantly, so these coincide --
+        # unlike real hardware, where a confirmation may never arrive.
+        return self._commanded
 
     def power_w(self) -> Optional[float]:
         return 150.0 if self._on else 0.4

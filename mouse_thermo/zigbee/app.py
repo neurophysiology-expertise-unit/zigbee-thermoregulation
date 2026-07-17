@@ -75,6 +75,7 @@ class ZigbeePlug(Plug):
         self.dev = _dev(app, cfg.plug_ieee)
         self.ep = self.dev.endpoints[cfg.plug_endpoint]
         self._confirmed: Optional[bool] = None
+        self._commanded: Optional[bool] = None
         self._power_w: Optional[float] = None
 
     async def bind_and_configure(self) -> None:
@@ -122,6 +123,9 @@ class ZigbeePlug(Plug):
         onoff = self.ep.in_clusters[OnOff.cluster_id]
         # Let exceptions propagate: a failed command must be visible.
         await (onoff.on() if on else onoff.off())
+        # Only recorded AFTER the command actually went out without raising,
+        # so a failed command doesn't leave us believing it succeeded.
+        self._commanded = on
 
     def set(self, on: bool) -> None:
         fut = asyncio.run_coroutine_threadsafe(self.set_async(on), self.loop)
@@ -129,6 +133,9 @@ class ZigbeePlug(Plug):
 
     def state(self) -> Optional[bool]:
         return self._confirmed
+
+    def commanded(self) -> Optional[bool]:
+        return self._commanded
 
     def power_w(self) -> Optional[float]:
         return self._power_w
