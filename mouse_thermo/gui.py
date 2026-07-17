@@ -53,13 +53,13 @@ from .main import SessionHandle, run
 
 log = logging.getLogger("mouse_thermo.gui")
 
-PLOT_WINDOW_OPTIONS_S = (1, 2, 4, 10)  # selectable sweep-plot window widths
+PLOT_WINDOW_OPTIONS_S = (1, 2, 4, 10, 60)  # selectable sweep-plot window widths
 DEFAULT_PLOT_WINDOW_S = 4
 UI_PERIOD_MS = 500     # UI refresh rate; independent of the control loop's own period
 SWEEP_RESOLUTION = 200  # samples across one full sweep, independent of poll rate
 SWEEP_ERASE_FRACTION = 0.05  # fraction of the sweep width blanked just ahead of the cursor
 PLOT_Y_MIN, PLOT_Y_MAX = 20.0, 50.0  # fixed temp axis -- not autoscaled to the data
-LAMP_ON_TINT = (1.0, 0.0, 0.0, 0.22)  # translucent red plot bg while lamp is on
+LAMP_ON_BAND = (1.0, 0.0, 0.0, 0.18)  # red band under the trace where lamp was ON
 
 
 class MainWindow(QMainWindow):
@@ -108,8 +108,12 @@ class MainWindow(QMainWindow):
         # the window size changes since the index<->time mapping changes.
         self._sweep_body = [float("nan")] * SWEEP_RESOLUTION
         self._sweep_amb = [float("nan")] * SWEEP_RESOLUTION
+        # Per sweep-position record of whether the lamp was ON when that point
+        # was drawn -- used to shade red bands at the times the lamp was on.
+        self._sweep_lamp = [False] * SWEEP_RESOLUTION
         self._sweep_xs = [i / SWEEP_RESOLUTION * DEFAULT_PLOT_WINDOW_S for i in range(SWEEP_RESOLUTION)]
         self._last_sweep_idx: Optional[int] = None
+        self._lamp_fill = None   # matplotlib collection for the red bands
 
         self._build_ui()
         # Apply the default mode (Freerun, lamp off) and default ground truth
@@ -392,11 +396,6 @@ class MainWindow(QMainWindow):
         (self.line_body,) = self.ax.plot([], [], label="body")
         (self.line_amb,) = self.ax.plot([], [], label="ambient")
         self.cursor_line = self.ax.axvline(0.0, color="0.5", linewidth=1, linestyle="--")
-        # Live "lamp on" indicator: the whole plot background goes red while
-        # the lamp relay is on. Default axes facecolor is what we restore to
-        # when it's off. During pulse mode this flashes in step with the
-        # on/off cycle, which is a useful visual confirmation of the pulse.
-        self._ax_facecolor_off = self.ax.get_facecolor()
         self.ax.set_xlim(0.0, self._plot_window_s)
         self.ax.set_ylim(PLOT_Y_MIN, PLOT_Y_MAX)  # fixed -- not autoscaled to the data
         self.ax.legend(loc="upper right")
@@ -420,6 +419,7 @@ class MainWindow(QMainWindow):
         # buffer contents would plot at the wrong x position otherwise.
         self._sweep_body = [float("nan")] * SWEEP_RESOLUTION
         self._sweep_amb = [float("nan")] * SWEEP_RESOLUTION
+        self._sweep_lamp = [False] * SWEEP_RESOLUTION
         self._sweep_xs = [i / SWEEP_RESOLUTION * seconds for i in range(SWEEP_RESOLUTION)]
         self._last_sweep_idx = None
         self.ax.set_xlim(0.0, seconds)
@@ -760,9 +760,11 @@ class MainWindow(QMainWindow):
         else:
             span = (idx - self._last_sweep_idx) % SWEEP_RESOLUTION or SWEEP_RESOLUTION
             fill = [(self._last_sweep_idx + 1 + k) % SWEEP_RESOLUTION for k in range(span)]
+        lamp_on = (lamp_state is True)
         for j in fill:
             self._sweep_body[j] = body_val
             self._sweep_amb[j] = amb_val
+            self._sweep_lamp[j] = lamp_on   # record on/off at each swept point
         self._last_sweep_idx = idx
 
         # Blank a small span just ahead of the cursor -- that gap-ahead is
@@ -773,15 +775,24 @@ class MainWindow(QMainWindow):
             j = (idx + k) % SWEEP_RESOLUTION
             self._sweep_body[j] = float("nan")
             self._sweep_amb[j] = float("nan")
+            self._sweep_lamp[j] = False
 
         self.line_body.set_data(self._sweep_xs, self._sweep_body)
         self.line_amb.set_data(self._sweep_xs, self._sweep_amb)
         self.cursor_line.set_xdata([phase * window, phase * window])
-        # Live lamp-on indicator: tint the plot red while the relay is on.
-        # Uses the same lamp_state as the readout so they never disagree; a
-        # None (unknown) state shows no tint rather than a false one.
-        self.ax.set_facecolor(LAMP_ON_TINT if lamp_state is True
-                              else self._ax_facecolor_off)
+
+        # Red bands at the times the lamp was ON: a full-height fill wherever
+        # _sweep_lamp is True. Aligned with the trace, so with 1s pulsing the
+        # bands alternate red/clear in step with the chop. Rebuilt each tick
+        # (remove the previous collection first).
+        if self._lamp_fill is not None:
+            self._lamp_fill.remove()
+        self._lamp_fill = self.ax.fill_between(
+            self._sweep_xs, PLOT_Y_MIN, PLOT_Y_MAX,
+            where=self._sweep_lamp, step="mid",
+            color=LAMP_ON_BAND[:3], alpha=LAMP_ON_BAND[3],
+            linewidth=0, zorder=0,
+        )
         # No relim()/autoscale_view() -- both axes are fixed (x to the sweep
         # window, y to PLOT_Y_MIN/MAX), so nothing needs to move each tick.
         self.canvas.draw_idle()
