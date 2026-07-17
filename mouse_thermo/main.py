@@ -33,6 +33,27 @@ from .watchdog import Watchdog
 
 log = logging.getLogger("mouse_thermo")
 
+
+class _SuppressSerialTeardownRace(logging.Filter):
+    """Drop the benign 'cannot schedule new futures after shutdown'
+    RuntimeError that serialx + the Windows ProactorEventLoop emit when a
+    serial transport's connection_lost cleanup fires just AFTER asyncio.run()
+    has torn down its executor. It happens only during process/session exit,
+    after run()'s finally has already commanded the lamp off -- pure teardown
+    noise. Matched precisely on the exception so a real mid-run serial error
+    (which goes through our own loop exception handler anyway) is untouched.
+    """
+    def filter(self, record: logging.LogRecord) -> bool:  # True = keep
+        exc = record.exc_info[1] if record.exc_info else None
+        if isinstance(exc, RuntimeError) and \
+                "cannot schedule new futures after shutdown" in str(exc):
+            return False
+        return True
+
+
+# Installed once on import; harmless for the CLI and the GUI alike.
+logging.getLogger("asyncio").addFilter(_SuppressSerialTeardownRace())
+
 # Re-send the current lamp command at least this often even if nothing
 # changed. Zigbee delivery is not guaranteed, so a dropped command would
 # otherwise persist silently until `desired` happened to change again.
@@ -229,6 +250,14 @@ async def run(
             # request a clean shutdown now, rather than waiting up to
             # watchdog_timeout_s for the watchdog to notice the loop stalled.
             exc = context.get("exception")
+            # The benign serial-close teardown race (see
+            # _SuppressSerialTeardownRace) can route here if it fires while the
+            # handler is still installed. It means "we are already exiting",
+            # not "the loop is dying mid-run", so don't escalate it.
+            if isinstance(exc, RuntimeError) and \
+                    "cannot schedule new futures after shutdown" in str(exc):
+                log.debug("ignoring benign serial teardown race: %r", exc)
+                return
             log.critical(
                 "UNHANDLED ASYNCIO CALLBACK EXCEPTION -- requesting immediate "
                 "shutdown: %s", context.get("message"), exc_info=exc,
