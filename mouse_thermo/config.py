@@ -36,8 +36,8 @@ class ControlConfig:
     # Pulse ("chopped lamp") mode: heat in short bursts so the RFID reader,
     # which the lamp's EMI silences while it runs, recovers in the OFF gaps
     # and reads body temp there. Adjustable live from the GUI.
-    pulse_on_s: float = 2.0
-    pulse_off_s: float = 2.0
+    pulse_on_s: float = 1.0
+    pulse_off_s: float = 1.0
 
 
 @dataclass
