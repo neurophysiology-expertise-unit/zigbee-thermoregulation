@@ -26,7 +26,7 @@ class SessionLogger:
                record_mode=None, body_setpoint_c=None, ambient_setpoint_c=None,
                safety_bypass_active=False, lamp_commanded=None,
                raw_rfid_id=None, raw_rfid_c=None, raw_rfid_age_s=None,
-               ground_truth=None) -> None:
+               ground_truth=None, pulse_active=False) -> None:
         self.write({
             "type": "sample",
             "body_c": body, "body_age_s": body_age,
@@ -45,6 +45,7 @@ class SessionLogger:
             "body_setpoint_c": body_setpoint_c, "ambient_setpoint_c": ambient_setpoint_c,
             "safety_bypass_active": safety_bypass_active,
             "ground_truth": ground_truth,
+            "pulse_active": pulse_active,
         })
 
     def event(self, kind: str, **kw) -> None:

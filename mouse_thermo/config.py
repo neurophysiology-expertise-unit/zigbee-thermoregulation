@@ -33,6 +33,11 @@ class ControlConfig:
     loop_period_s: float = 5.0
     min_on_s: float = 30.0                # relay protection / anti-chatter
     min_off_s: float = 30.0
+    # Pulse ("chopped lamp") mode: heat in short bursts so the RFID reader,
+    # which the lamp's EMI silences while it runs, recovers in the OFF gaps
+    # and reads body temp there. Manual bench feature; see gui.py Freerun.
+    pulse_on_s: float = 3.0
+    pulse_off_s: float = 3.0
 
 
 @dataclass
@@ -116,6 +121,8 @@ class Config:
             raise ValueError("body_setpoint_c outside body_valid_range")
         if s.watchdog_timeout_s <= c.loop_period_s:
             raise ValueError("watchdog_timeout_s must exceed loop_period_s")
+        if c.pulse_on_s <= 0 or c.pulse_off_s <= 0:
+            raise ValueError("pulse_on_s and pulse_off_s must be positive")
         if self.esp32.enabled:
             # Crash loudly rather than degrade: a typo here would otherwise
             # only surface as a silently dead sensor at runtime.

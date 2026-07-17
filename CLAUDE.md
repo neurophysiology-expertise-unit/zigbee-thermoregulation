@@ -105,6 +105,16 @@ seconds the instant the lamp comes on, reads resume the instant it's off), so
 body is not a trustworthy continuous regulation source during heating on this
 rig. This is a hardware/EMI limitation, not a software one.
 
+**Pulse ("chopped lamp") mode** (Freerun): a button that auto-cycles the lamp
+on `pulse_on_s` / off `pulse_off_s` (default 3s/3s), so the RFID reader
+recovers in the OFF gaps and reads body temp there (body stays fresh for
+`body_stale_after_s` through the next ON burst). It is a manual override that
+rides inside the same LOCKOUT gating — a safety veto still forces OFF mid-cycle
+(tested). The control loop shortens its wait to wake on pulse edges rather than
+aliasing the pulse against `loop_period_s`. Note: engaging pulse (like the
+manual lamp buttons) has up to `loop_period_s` latency before it takes effect,
+and rapid relay cycling wears the plug's mechanical relay.
+
 ## Before any change to safety.py / controller.py / bus.py
 
 Run these from the repo root (the parent of `mouse_thermo/`) — `main.py` uses

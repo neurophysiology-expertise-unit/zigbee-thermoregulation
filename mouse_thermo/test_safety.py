@@ -212,3 +212,38 @@ def test_commanded_defaults_to_none_so_first_command_always_sends():
     assert plug.commanded() is None
     assert (False != plug.commanded()) is True
     assert (True != plug.commanded()) is True
+
+
+# ---- pulse ("chopped lamp") timing ---------------------------------------
+
+from mouse_thermo.main import pulse_is_on, pulse_time_to_edge
+
+
+def test_pulse_alternates_on_and_off():
+    on_s, off_s = 3.0, 3.0
+    # elapsed 0..3 -> ON, 3..6 -> OFF, then repeats.
+    assert pulse_is_on(0.0, on_s, off_s) is True
+    assert pulse_is_on(2.9, on_s, off_s) is True
+    assert pulse_is_on(3.0, on_s, off_s) is False   # edge belongs to OFF
+    assert pulse_is_on(5.9, on_s, off_s) is False
+    assert pulse_is_on(6.0, on_s, off_s) is True    # next cycle ON
+    assert pulse_is_on(9.0, on_s, off_s) is False
+
+
+def test_pulse_asymmetric_duty_cycle():
+    # 1s on / 4s off, for a mostly-off duty that maximises RFID read time.
+    assert pulse_is_on(0.5, 1.0, 4.0) is True
+    assert pulse_is_on(1.5, 1.0, 4.0) is False
+    assert pulse_is_on(4.9, 1.0, 4.0) is False
+    assert pulse_is_on(5.0, 1.0, 4.0) is True
+
+
+def test_pulse_time_to_edge_lets_loop_wake_on_transitions():
+    on_s, off_s = 3.0, 3.0
+    # Just engaged: full ON window ahead.
+    assert abs(pulse_time_to_edge(0.0, on_s, off_s) - 3.0) < 1e-9
+    # Partway through ON: remaining ON time.
+    assert abs(pulse_time_to_edge(1.0, on_s, off_s) - 2.0) < 1e-9
+    # Just past the ON->OFF edge: remaining OFF time.
+    assert abs(pulse_time_to_edge(3.0, on_s, off_s) - 3.0) < 1e-9
+    assert abs(pulse_time_to_edge(4.5, on_s, off_s) - 1.5) < 1e-9

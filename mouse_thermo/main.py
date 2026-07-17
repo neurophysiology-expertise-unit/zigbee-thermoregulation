@@ -39,6 +39,23 @@ log = logging.getLogger("mouse_thermo")
 COMMAND_REASSERT_S = 20.0
 
 
+def pulse_is_on(elapsed_s: float, on_s: float, off_s: float) -> bool:
+    """True during the ON portion of a repeating on/off cycle. `elapsed_s`
+    is time since pulsing began. Pure function so the edge timing is
+    unit-testable independent of the async loop."""
+    cycle = on_s + off_s
+    return (elapsed_s % cycle) < on_s
+
+
+def pulse_time_to_edge(elapsed_s: float, on_s: float, off_s: float) -> float:
+    """Seconds until the next on->off or off->on transition. The control
+    loop waits at most this long so it wakes exactly on pulse edges rather
+    than aliasing a 3s pulse against its slower regulation period."""
+    cycle = on_s + off_s
+    phase = elapsed_s % cycle
+    return (on_s - phase) if phase < on_s else (cycle - phase)
+
+
 class RecordingBox:
     """Thread-safe start/stop for a dedicated recording file, mirrored
     alongside the main session.jsonl. start()/stop() are called from an
@@ -108,6 +125,7 @@ async def run(
     max_seconds: Optional[float] = None,
     manual_override: Optional[threading.Event] = None,
     manual_on: Optional[threading.Event] = None,
+    pulse_active: Optional[threading.Event] = None,
     safety_bypass: Optional[threading.Event] = None,
     ground_truth_getter: Optional[Callable[[], str]] = None,
     on_ready: Optional[Callable[[SessionHandle], None]] = None,
@@ -258,6 +276,8 @@ async def run(
             on_ready(handle)
 
         # ---- main loop ----------------------------------------------------
+        pulse_t0 = 0.0          # when the current pulse run began (monotonic)
+        pulse_was_active = False
         while not stop.is_set():
             now = time.monotonic()
             body = body_ch.get(now)
@@ -296,13 +316,28 @@ async def run(
             # testing. Every tick it's active is recorded (sample_kwargs
             # below) so it's never ambiguous in the data afterward whether
             # this was engaged.
+            # Pulse ("chopped lamp"): while active, the manual desired state
+            # follows a fixed on/off cycle instead of a steady manual_on, so
+            # the lamp heats in bursts and the RFID reader recovers in the OFF
+            # gaps. It rides INSIDE the manual-override gating below, so a
+            # safety LOCKOUT still forces OFF exactly as for any manual state
+            # -- the pulse never energizes the lamp when safety forbids heat.
+            pulsing = bool(pulse_active and pulse_active.is_set())
+            if pulsing and not pulse_was_active:
+                pulse_t0 = now          # engage: start a fresh cycle (ON first)
+            pulse_was_active = pulsing
+
             bypass_active = bool(safety_bypass and safety_bypass.is_set())
             if (
                 manual_override is not None
                 and manual_override.is_set()
                 and (bypass_active or not (decision.state is State.LOCKOUT and decision.latched))
             ):
-                desired = bool(manual_on and manual_on.is_set())
+                if pulsing:
+                    desired = pulse_is_on(now - pulse_t0,
+                                          cfg.control.pulse_on_s, cfg.control.pulse_off_s)
+                else:
+                    desired = bool(manual_on and manual_on.is_set())
             else:
                 desired = decision.lamp_on
 
@@ -358,6 +393,7 @@ async def run(
                 state=decision.state.value,
                 reason=decision.reason,
                 manual_override=bool(manual_override and manual_override.is_set()),
+                pulse_active=pulsing,
                 safety_bypass_active=bypass_active,
                 ground_truth=ground_truth,
                 raw_rfid_id=raw_rfid_id,
@@ -371,8 +407,17 @@ async def run(
             if decision.state is State.LOCKOUT:
                 log.warning("LOCKOUT: %s", decision.reason)
 
+            # Normally wait one regulation period. While pulsing, shorten the
+            # wait so the loop wakes right at the next on/off edge instead of
+            # aliasing a 3s pulse against a 5s period -- floored so we never
+            # busy-spin right on an edge.
+            wait_s = cfg.control.loop_period_s
+            if pulsing:
+                edge = pulse_time_to_edge(now - pulse_t0,
+                                          cfg.control.pulse_on_s, cfg.control.pulse_off_s)
+                wait_s = max(0.1, min(wait_s, edge))
             try:
-                await asyncio.wait_for(stop.wait(), cfg.control.loop_period_s)
+                await asyncio.wait_for(stop.wait(), wait_s)
             except asyncio.TimeoutError:
                 pass
 

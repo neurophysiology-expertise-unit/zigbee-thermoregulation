@@ -75,6 +75,10 @@ class MainWindow(QMainWindow):
         # starts cleared -- an explicit per-session operator acknowledgement,
         # not a setting that could silently carry into a later real run.
         self.safety_bypass = threading.Event()
+        # Pulse ("chopped lamp"): auto-cycles the lamp on/off so the RFID
+        # reader recovers in the off gaps. A Freerun feature; rides inside
+        # the same manual-override gating so a safety LOCKOUT still wins.
+        self.pulse_active = threading.Event()
 
         # Plain string owned by the GUI thread, read cross-thread by the
         # control loop via a getter (safe under the GIL; no Qt widget is
@@ -120,6 +124,7 @@ class MainWindow(QMainWindow):
                 self.cfg,
                 manual_override=self.manual_override,
                 manual_on=self.manual_on,
+                pulse_active=self.pulse_active,
                 safety_bypass=self.safety_bypass,
                 ground_truth_getter=lambda: self._ground_truth,
                 on_ready=self._on_ready,
@@ -214,15 +219,20 @@ class MainWindow(QMainWindow):
         toggle_row.addWidget(self.btn_mode_auto)
         mode_v.addLayout(toggle_row)
 
-        # Freerun sub-controls: manual lamp ON / OFF.
+        # Freerun sub-controls: manual lamp ON / OFF, plus Pulse.
         self.freerun_row = QHBoxLayout()
         self.freerun_row.addWidget(QLabel("Freerun lamp:"))
         self.btn_lamp_on = QPushButton("Lamp ON")
         self.btn_lamp_off = QPushButton("Lamp OFF")
+        pon, poff = self.cfg.control.pulse_on_s, self.cfg.control.pulse_off_s
+        self.btn_pulse = QPushButton(f"Pulse ({pon:g}s on / {poff:g}s off)")
+        self.btn_pulse.setCheckable(True)
         self.btn_lamp_on.clicked.connect(self._manual_lamp_on)
         self.btn_lamp_off.clicked.connect(self._manual_lamp_off)
+        self.btn_pulse.clicked.connect(self._toggle_pulse)
         self.freerun_row.addWidget(self.btn_lamp_on)
         self.freerun_row.addWidget(self.btn_lamp_off)
+        self.freerun_row.addWidget(self.btn_pulse)
         mode_v.addLayout(self.freerun_row)
 
         # Auto sub-control: which sensor is the regulation ground truth.
@@ -366,13 +376,18 @@ class MainWindow(QMainWindow):
 
     def _sync_mode_controls(self, mode: str) -> None:
         freerun = (mode == "freerun")
-        # Lamp buttons only make sense in Freerun; ground truth only in Auto.
-        # Both are additionally disabled while a recording is active (handled
-        # in _start_recording / _stop_recording).
+        # Lamp/pulse buttons only make sense in Freerun; ground truth only in
+        # Auto. All are additionally disabled while a recording is active
+        # (handled in _start_recording / _stop_recording).
         recording = self.handle is not None and self.handle.recording.active
         self.btn_lamp_on.setEnabled(freerun and not recording)
         self.btn_lamp_off.setEnabled(freerun and not recording)
+        self.btn_pulse.setEnabled(freerun and not recording)
         self.combo_ground_truth.setEnabled((not freerun) and not recording)
+        # Leaving Freerun disengages pulsing entirely.
+        if not freerun and self.pulse_active.is_set():
+            self.pulse_active.clear()
+            self.btn_pulse.setChecked(False)
         # Keep the toggle buttons' checked state in sync (e.g. when a
         # recording forces a mode).
         self.btn_mode_freerun.setChecked(freerun)
@@ -389,12 +404,32 @@ class MainWindow(QMainWindow):
         self._sync_mode_controls(mode)
 
     def _manual_lamp_on(self) -> None:
+        self._cancel_pulse()          # a steady command overrides pulsing
         self.manual_on.set()
         self.manual_override.set()
 
     def _manual_lamp_off(self) -> None:
+        self._cancel_pulse()
         self.manual_on.clear()
         self.manual_override.set()
+
+    def _cancel_pulse(self) -> None:
+        if self.pulse_active.is_set():
+            self.pulse_active.clear()
+        self.btn_pulse.setChecked(False)
+
+    def _toggle_pulse(self, checked: bool) -> None:
+        if checked:
+            # Pulsing IS a manual override -- the controller no longer drives
+            # the lamp; the on/off cycle does (subject to safety LOCKOUT).
+            self.manual_override.set()
+            self.pulse_active.set()
+        else:
+            self.pulse_active.clear()
+            # Fall back to a steady OFF so releasing pulse never leaves the
+            # lamp stuck on mid-cycle.
+            self.manual_on.clear()
+            self.manual_override.set()
 
     def _on_ground_truth_changed(self, index: int) -> None:
         self._ground_truth = self.combo_ground_truth.itemData(index)
@@ -516,8 +551,12 @@ class MainWindow(QMainWindow):
         # Lock everything that defines the trial: mode toggle, ground truth,
         # lamp buttons, animal id, output dir. The mode must not change under
         # a running recording (it would contradict the file's loop-mode label).
+        # Lock the trial-defining controls. pulse_active itself is NOT
+        # cleared -- a Freerun/open-loop recording may legitimately run WITH
+        # the lamp pulsing (that's how you capture body temp in the gaps);
+        # only the button is disabled so it can't be toggled mid-trial.
         for w in (self.mode_widgets + self.recording_mode_widgets
-                  + [self.btn_lamp_on, self.btn_lamp_off]):
+                  + [self.btn_lamp_on, self.btn_lamp_off, self.btn_pulse]):
             w.setEnabled(False)
         self.btn_record.setText("Stop Recording")
         gt = f", ground truth = {self._ground_truth}" if mode == "closed_loop" else ""
@@ -611,7 +650,9 @@ class MainWindow(QMainWindow):
         if decision is not None:
             self.lbl_state.setText(decision.state.value)
             self.lbl_reason.setText(decision.reason)
-        if self.manual_override.is_set():
+        if self.pulse_active.is_set():
+            base = "FREERUN (PULSE)"
+        elif self.manual_override.is_set():
             base = "FREERUN (manual)"
         else:
             base = f"AUTO (ground truth: {self._ground_truth})"
