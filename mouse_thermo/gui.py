@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QButtonGroup,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -252,8 +253,7 @@ class MainWindow(QMainWindow):
         self.freerun_row.addWidget(QLabel("Freerun lamp:"))
         self.btn_lamp_on = QPushButton("Lamp ON")
         self.btn_lamp_off = QPushButton("Lamp OFF")
-        pon, poff = self.cfg.control.pulse_on_s, self.cfg.control.pulse_off_s
-        self.btn_pulse = QPushButton(f"Pulse ({pon:g}s on / {poff:g}s off)")
+        self.btn_pulse = QPushButton("Pulse")
         self.btn_pulse.setCheckable(True)
         self.btn_lamp_on.clicked.connect(self._manual_lamp_on)
         self.btn_lamp_off.clicked.connect(self._manual_lamp_off)
@@ -273,20 +273,41 @@ class MainWindow(QMainWindow):
         gt_row.addWidget(self.combo_ground_truth)
         mode_v.addLayout(gt_row)
 
-        pon, poff = self.cfg.control.pulse_on_s, self.cfg.control.pulse_off_s
         self.chk_auto_pulse = QCheckBox(
-            f"Pulse heat ({pon:g}s/{poff:g}s) in Auto -- needed to read body/RFID "
-            f"while heating"
+            "Pulse heat in Auto -- needed to read body/RFID while heating"
         )
         self.chk_auto_pulse.setChecked(self.auto_pulse.is_set())
         self.chk_auto_pulse.toggled.connect(self._on_auto_pulse_toggled)
         mode_v.addWidget(self.chk_auto_pulse)
 
+        # Pulse cycle timing, live-adjustable (used by both Freerun pulse and
+        # Auto pulse). Shorter = more frequent RFID read windows; the off-time
+        # only needs to be long enough for one read.
+        pulse_timing_row = QHBoxLayout()
+        pulse_timing_row.addWidget(QLabel("Pulse cycle:"))
+        self.spin_pulse_on = QDoubleSpinBox()
+        self.spin_pulse_on.setRange(0.5, 60.0)
+        self.spin_pulse_on.setSingleStep(0.5)
+        self.spin_pulse_on.setSuffix(" s on")
+        self.spin_pulse_on.setValue(self.cfg.control.pulse_on_s)
+        self.spin_pulse_on.valueChanged.connect(self._on_pulse_timing_changed)
+        self.spin_pulse_off = QDoubleSpinBox()
+        self.spin_pulse_off.setRange(0.5, 60.0)
+        self.spin_pulse_off.setSingleStep(0.5)
+        self.spin_pulse_off.setSuffix(" s off")
+        self.spin_pulse_off.setValue(self.cfg.control.pulse_off_s)
+        self.spin_pulse_off.valueChanged.connect(self._on_pulse_timing_changed)
+        pulse_timing_row.addWidget(self.spin_pulse_on)
+        pulse_timing_row.addWidget(self.spin_pulse_off)
+        pulse_timing_row.addStretch(1)
+        mode_v.addLayout(pulse_timing_row)
+
         setup_v.addWidget(mode_box)
         # Widgets locked while a recording is active (mode must not change
         # mid-trial). The lamp buttons are additionally gated by mode below.
         self.mode_widgets = [self.btn_mode_freerun, self.btn_mode_auto,
-                             self.combo_ground_truth, self.chk_auto_pulse]
+                             self.combo_ground_truth, self.chk_auto_pulse,
+                             self.spin_pulse_on, self.spin_pulse_off]
 
         setpoint_box = QGroupBox("Closed-loop setpoints (live-tunable, "
                                   "checked against the hard safety max before applying)")
@@ -483,6 +504,12 @@ class MainWindow(QMainWindow):
             self.auto_pulse.set()
         else:
             self.auto_pulse.clear()
+
+    def _on_pulse_timing_changed(self, _value: float = 0.0) -> None:
+        # Live-update the shared config the control loop reads each tick.
+        # The spinbox range already guarantees > 0 (config.validate's floor).
+        self.cfg.control.pulse_on_s = self.spin_pulse_on.value()
+        self.cfg.control.pulse_off_s = self.spin_pulse_off.value()
 
     # ---- closed-loop setpoints -----------------------------------------------
 

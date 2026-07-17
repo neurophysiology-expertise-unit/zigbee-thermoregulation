@@ -106,7 +106,8 @@ body is not a trustworthy continuous regulation source during heating on this
 rig. This is a hardware/EMI limitation, not a software one.
 
 **Pulse ("chopped lamp")**: heat in `pulse_on_s`/`pulse_off_s` bursts (default
-3s/3s) so the RFID reader recovers in the OFF gaps and reads body temp there
+2s/2s, live-adjustable via GUI spinboxes) so the RFID reader recovers in the
+OFF gaps and reads body temp there
 (body stays fresh for `body_stale_after_s` through the next ON burst). Two
 forms, both computed in `main.py`'s desired-lamp logic, both riding inside the
 same LOCKOUT gating (a safety veto forces OFF mid-cycle — tested):
