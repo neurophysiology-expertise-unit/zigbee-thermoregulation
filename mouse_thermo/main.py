@@ -147,6 +147,7 @@ async def run(
     manual_override: Optional[threading.Event] = None,
     manual_on: Optional[threading.Event] = None,
     pulse_active: Optional[threading.Event] = None,
+    auto_pulse: Optional[threading.Event] = None,
     safety_bypass: Optional[threading.Event] = None,
     ground_truth_getter: Optional[Callable[[], str]] = None,
     on_ready: Optional[Callable[[SessionHandle], None]] = None,
@@ -334,28 +335,41 @@ async def run(
             # testing. Every tick it's active is recorded (sample_kwargs
             # below) so it's never ambiguous in the data afterward whether
             # this was engaged.
-            # Pulse ("chopped lamp"): while active, the manual desired state
-            # follows a fixed on/off cycle instead of a steady manual_on, so
-            # the lamp heats in bursts and the RFID reader recovers in the OFF
-            # gaps. It rides INSIDE the manual-override gating below, so a
-            # safety LOCKOUT still forces OFF exactly as for any manual state
-            # -- the pulse never energizes the lamp when safety forbids heat.
-            pulsing = bool(pulse_active and pulse_active.is_set())
+            # Decide the lamp command. Two independent things can turn the
+            # controller's "heat" decision into a 3s-on/3s-off PULSE so the
+            # RFID reader recovers in the OFF gaps:
+            #   - Freerun pulse (pulse_active): a manual override that pulses
+            #     regardless of the controller.
+            #   - Auto pulse (auto_pulse): in AUTO, the controller's ON
+            #     decision is *delivered* as pulses instead of steady-on; when
+            #     the controller wants OFF (body at setpoint) the lamp is off,
+            #     no pulsing.
+            # Either way, pulsing never bypasses safety: a LATCHED lockout
+            # forces OFF (allowed is False), and in AUTO the controller has
+            # already applied its own veto via decision.lamp_on.
+            bypass_active = bool(safety_bypass and safety_bypass.is_set())
+            manual = manual_override is not None and manual_override.is_set()
+            allowed = bypass_active or not (
+                decision.state is State.LOCKOUT and decision.latched)
+
+            freerun_pulse = manual and bool(pulse_active and pulse_active.is_set())
+            auto_pulse_now = (not manual) and bool(auto_pulse and auto_pulse.is_set()) \
+                and decision.lamp_on
+            pulsing = allowed and (freerun_pulse or auto_pulse_now)
+
+            # Restart the pulse cycle (ON first) whenever pulsing begins, so
+            # heat is delivered promptly rather than possibly landing mid-OFF.
             if pulsing and not pulse_was_active:
-                pulse_t0 = now          # engage: start a fresh cycle (ON first)
+                pulse_t0 = now
             pulse_was_active = pulsing
 
-            bypass_active = bool(safety_bypass and safety_bypass.is_set())
-            if (
-                manual_override is not None
-                and manual_override.is_set()
-                and (bypass_active or not (decision.state is State.LOCKOUT and decision.latched))
-            ):
-                if pulsing:
-                    desired = pulse_is_on(now - pulse_t0,
-                                          cfg.control.pulse_on_s, cfg.control.pulse_off_s)
-                else:
-                    desired = bool(manual_on and manual_on.is_set())
+            if not allowed:
+                desired = decision.lamp_on          # latched lockout -> off
+            elif pulsing:
+                desired = pulse_is_on(now - pulse_t0,
+                                      cfg.control.pulse_on_s, cfg.control.pulse_off_s)
+            elif manual:
+                desired = bool(manual_on and manual_on.is_set())
             else:
                 desired = decision.lamp_on
 

@@ -81,6 +81,12 @@ class MainWindow(QMainWindow):
         # reader recovers in the off gaps. A Freerun feature; rides inside
         # the same manual-override gating so a safety LOCKOUT still wins.
         self.pulse_active = threading.Event()
+        # Auto pulse: in AUTO, deliver the controller's HEAT decision as
+        # pulses (so RFID can read while regulating on body). Default on --
+        # the operator asked for AUTO to pulse; uncheck when regulating on
+        # ambient, where pulsing gives no benefit.
+        self.auto_pulse = threading.Event()
+        self.auto_pulse.set()
 
         # Plain string owned by the GUI thread, read cross-thread by the
         # control loop via a getter (safe under the GIL; no Qt widget is
@@ -127,6 +133,7 @@ class MainWindow(QMainWindow):
                 manual_override=self.manual_override,
                 manual_on=self.manual_on,
                 pulse_active=self.pulse_active,
+                auto_pulse=self.auto_pulse,
                 safety_bypass=self.safety_bypass,
                 ground_truth_getter=lambda: self._ground_truth,
                 on_ready=self._on_ready,
@@ -256,7 +263,7 @@ class MainWindow(QMainWindow):
         self.freerun_row.addWidget(self.btn_pulse)
         mode_v.addLayout(self.freerun_row)
 
-        # Auto sub-control: which sensor is the regulation ground truth.
+        # Auto sub-controls: ground truth + whether to pulse heat delivery.
         gt_row = QHBoxLayout()
         gt_row.addWidget(QLabel("Auto ground truth:"))
         self.combo_ground_truth = QComboBox()
@@ -266,11 +273,20 @@ class MainWindow(QMainWindow):
         gt_row.addWidget(self.combo_ground_truth)
         mode_v.addLayout(gt_row)
 
+        pon, poff = self.cfg.control.pulse_on_s, self.cfg.control.pulse_off_s
+        self.chk_auto_pulse = QCheckBox(
+            f"Pulse heat ({pon:g}s/{poff:g}s) in Auto -- needed to read body/RFID "
+            f"while heating"
+        )
+        self.chk_auto_pulse.setChecked(self.auto_pulse.is_set())
+        self.chk_auto_pulse.toggled.connect(self._on_auto_pulse_toggled)
+        mode_v.addWidget(self.chk_auto_pulse)
+
         setup_v.addWidget(mode_box)
         # Widgets locked while a recording is active (mode must not change
         # mid-trial). The lamp buttons are additionally gated by mode below.
         self.mode_widgets = [self.btn_mode_freerun, self.btn_mode_auto,
-                             self.combo_ground_truth]
+                             self.combo_ground_truth, self.chk_auto_pulse]
 
         setpoint_box = QGroupBox("Closed-loop setpoints (live-tunable, "
                                   "checked against the hard safety max before applying)")
@@ -411,6 +427,7 @@ class MainWindow(QMainWindow):
         self.btn_lamp_off.setEnabled(freerun and not recording)
         self.btn_pulse.setEnabled(freerun and not recording)
         self.combo_ground_truth.setEnabled((not freerun) and not recording)
+        self.chk_auto_pulse.setEnabled((not freerun) and not recording)
         # Leaving Freerun disengages pulsing entirely.
         if not freerun and self.pulse_active.is_set():
             self.pulse_active.clear()
@@ -460,6 +477,12 @@ class MainWindow(QMainWindow):
 
     def _on_ground_truth_changed(self, index: int) -> None:
         self._ground_truth = self.combo_ground_truth.itemData(index)
+
+    def _on_auto_pulse_toggled(self, checked: bool) -> None:
+        if checked:
+            self.auto_pulse.set()
+        else:
+            self.auto_pulse.clear()
 
     # ---- closed-loop setpoints -----------------------------------------------
 
@@ -682,7 +705,8 @@ class MainWindow(QMainWindow):
         elif self.manual_override.is_set():
             base = "FREERUN (manual)"
         else:
-            base = f"AUTO (ground truth: {self._ground_truth})"
+            pulse_note = ", PULSE" if self.auto_pulse.is_set() else ""
+            base = f"AUTO (ground truth: {self._ground_truth}{pulse_note})"
         if self.handle.recording.active:
             base = f"RECORDING [{self.handle.recording.mode}] -- {base}"
         if self.safety_bypass.is_set():

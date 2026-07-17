@@ -105,15 +105,22 @@ seconds the instant the lamp comes on, reads resume the instant it's off), so
 body is not a trustworthy continuous regulation source during heating on this
 rig. This is a hardware/EMI limitation, not a software one.
 
-**Pulse ("chopped lamp") mode** (Freerun): a button that auto-cycles the lamp
-on `pulse_on_s` / off `pulse_off_s` (default 3s/3s), so the RFID reader
-recovers in the OFF gaps and reads body temp there (body stays fresh for
-`body_stale_after_s` through the next ON burst). It is a manual override that
-rides inside the same LOCKOUT gating — a safety veto still forces OFF mid-cycle
-(tested). The control loop shortens its wait to wake on pulse edges rather than
-aliasing the pulse against `loop_period_s`. Note: engaging pulse (like the
-manual lamp buttons) has up to `loop_period_s` latency before it takes effect,
-and rapid relay cycling wears the plug's mechanical relay.
+**Pulse ("chopped lamp")**: heat in `pulse_on_s`/`pulse_off_s` bursts (default
+3s/3s) so the RFID reader recovers in the OFF gaps and reads body temp there
+(body stays fresh for `body_stale_after_s` through the next ON burst). Two
+forms, both computed in `main.py`'s desired-lamp logic, both riding inside the
+same LOCKOUT gating (a safety veto forces OFF mid-cycle — tested):
+- **Freerun pulse** (`pulse_active`): a manual-override button; pulses
+  regardless of the controller.
+- **Auto pulse** (`auto_pulse`, default ON): in AUTO the controller's *heat*
+  decision (`decision.lamp_on`) is *delivered* as pulses instead of steady-on;
+  when the controller wants OFF (body at setpoint) the lamp is off, no pulsing.
+  This is what makes closed-loop body/RFID regulation possible at all, since
+  the lamp otherwise blinds the reader. Uncheck it when regulating on ambient,
+  where pulsing gives no benefit and just halves heating + wears the relay.
+The loop shortens its wait to wake on pulse edges rather than aliasing against
+`loop_period_s`. Engaging pulse has up to `loop_period_s` latency, and rapid
+relay cycling wears the plug's mechanical relay.
 
 ## Before any change to safety.py / controller.py / bus.py
 
