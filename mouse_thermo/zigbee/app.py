@@ -219,7 +219,7 @@ class ZigbeeSensorListener:
         self.ep = self.dev.endpoints[cfg.sensor_endpoint]
         self.dev.add_listener(self)
 
-    async def configure(self) -> None:
+    async def _bind_and_configure(self) -> None:
         cl = self.ep.in_clusters[TemperatureMeasurement.cluster_id]
         await cl.bind()
         # Battery device: it reports on its own schedule, and the device is
@@ -233,21 +233,58 @@ class ZigbeeSensorListener:
             min_interval=5, max_interval=30, reportable_change=5,  # 0.05 C
         )
 
-        # Seed the channel with an explicit read, for the same reason as the
-        # plug's on_off above: waiting only for the device's own report can
-        # leave ambient showing "stale/unknown" for minutes even though the
-        # value is readable right now. Non-fatal -- a sleepy device may
-        # simply not answer, which is exactly why it isn't a safety sensor.
-        try:
-            rd = await cl.read_attributes(["measured_value"])
-            val = rd[0].get("measured_value",
-                            rd[0].get(TemperatureMeasurement.AttributeDefs.measured_value.id))
-            if val is not None:
-                self.ch.push(val / 100.0, meta={"src": "zigbee_snzb02_initial_read"})
-                log.info("ambient sensor initial read: %.2fC", val / 100.0)
-        except Exception:
-            log.warning("could not read initial ambient value (non-fatal); "
-                        "waiting for the device's own report", exc_info=True)
+    async def _read_once(self, tag: str = "poll") -> bool:
+        """Best-effort active read. Returns True if a value was obtained.
+        A sleepy device may simply not answer (the read times out); the
+        caller treats that as a non-event."""
+        cl = self.ep.in_clusters[TemperatureMeasurement.cluster_id]
+        rd = await cl.read_attributes(["measured_value"])
+        val = rd[0].get("measured_value",
+                        rd[0].get(TemperatureMeasurement.AttributeDefs.measured_value.id))
+        if val is None:
+            return False
+        self.ch.push(val / 100.0, meta={"src": f"zigbee_snzb02_{tag}"})
+        return True
+
+    async def run_maintenance(self, poll_period_s: float = 20.0) -> None:
+        """Background upkeep for the ambient sensor, run as its OWN task so
+        a sleepy device's slow/failed transactions never stall the control
+        loop:
+
+          1. bind + configure_reporting (retried, so a device asleep at
+             startup still gets set up when it next wakes -- this is what
+             makes it send spontaneous reports at all);
+          2. then actively re-read periodically, since the SNZB-02 often
+             ignores the reporting config and would otherwise leave ambient
+             to age out between its own infrequent reports.
+
+        Never raises; every failure is logged and retried. Cancelled cleanly
+        on shutdown.
+        """
+        for attempt in range(1, 1000):
+            try:
+                await self._bind_and_configure()
+                log.info("ambient sensor bound/configured (attempt %d)", attempt)
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.warning("ambient bind/configure attempt %d failed (sleepy "
+                            "device asleep?); retrying -- meanwhile any report "
+                            "it sends is still captured", attempt,
+                            exc_info=(attempt == 1))
+                await asyncio.sleep(30)
+
+        # Seed immediately, then keep polling.
+        while True:
+            try:
+                if await self._read_once("read"):
+                    pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.debug("ambient active read failed (sleepy device): %r", e)
+            await asyncio.sleep(poll_period_s)
 
     def last_seen_age(self, now: float) -> Optional[float]:
         """`now` must be time.time(), not time.monotonic() -- see Plug's

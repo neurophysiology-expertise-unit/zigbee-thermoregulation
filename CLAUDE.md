@@ -183,9 +183,22 @@ This is mitigated by an **inline bimetallic thermostat / thermal cutoff on the
 lamp circuit**, set a few degrees above `ambient_max_c`. That is a hardware
 requirement, not a software one. Do not attempt to solve it in Python.
 
-The SNZB-02 is a battery device reporting on-change every ~30s–few minutes. It
-is a logging and fallback input, **not** a fast safety sensor. Do not write
-code that assumes it is fresh.
+The SNZB-02 is a battery *sleepy* device: it reports on-change every ~30s–few
+minutes and routinely ignores the `configure_reporting` request. It is a
+logging and fallback input, **not** a fast safety sensor. Do not write code
+that assumes it is fresh.
+
+Its bind/configure/read transactions can each hang ~55s (message timeout) if
+the device is asleep, so they run in a **background task**
+(`ZigbeeSensorListener.run_maintenance`), NEVER inline in startup — doing them
+inline previously stalled the whole session for minutes. The task retries the
+bind and then actively re-reads (~20s) to compensate for the device ignoring
+its reporting config. The report callback is registered the instant the
+listener is constructed, so spontaneous reports are captured regardless of
+whether the bind has succeeded yet. **Never move ambient setup back onto the
+control-loop / startup critical path** — a sleepy device must not be able to
+block the safety loop. The real fix for continuous ambient is the wired ESP32
+probe, not this sensor.
 
 ## Style
 

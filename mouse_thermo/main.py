@@ -145,6 +145,7 @@ async def run(
     app = None
     plug = None
     ambient_listener = None
+    ambient_task = None
 
     try:
         # ---- actuator + zigbee sensor ------------------------------------
@@ -173,31 +174,19 @@ async def run(
         slog.event("startup_lamp_off")
 
         if not cfg.simulate and cfg.zigbee.sensor_ieee:
-            # Reuse the SAME listener instance across attempts -- it's
-            # constructed once and registers itself with the zigpy device;
-            # reconstructing on each retry would stack duplicate listeners.
+            # Constructing the listener registers its report callback, so
+            # spontaneous reports are captured from this moment on. All the
+            # slow/unreliable transactions (bind, configure_reporting,
+            # periodic reads) run in a SEPARATE background task -- a sleepy
+            # SNZB-02 can hang each of those ~55s, and doing them inline here
+            # stalled the whole session startup for minutes. Off the critical
+            # path, the control loop starts immediately and ambient fills in
+            # whenever the sensor is reachable. It's documented as a
+            # fallback/logging input, never a safety sensor, so this is the
+            # correct place for it to be best-effort.
             listener = ZigbeeSensorListener(app, cfg.zigbee, amb_ch)
-            for attempt in range(1, 4):
-                try:
-                    await listener.configure()
-                    ambient_listener = listener
-                    break
-                except Exception:
-                    log.warning("ambient sensor bind attempt %d/3 failed "
-                                "(sleepy battery end device -- retrying)",
-                                attempt, exc_info=True)
-                    if attempt < 3:
-                        await asyncio.sleep(2.0)
-            else:
-                # The SNZB-02 is documented (CLAUDE.md) as a fallback/logging
-                # input, not the primary safety sensor -- a bind hiccup on a
-                # sleepy battery end device shouldn't take down the whole
-                # run. Left unconfigured, amb_ch just never gets pushed to
-                # and stays permanently stale, which the controller already
-                # treats as "unknown -> unsafe" (invariant 2), i.e. the
-                # correct fail-cold degradation, not a crash.
-                log.error("ambient sensor bind failed after 3 attempts; "
-                          "continuing without it")
+            ambient_listener = listener
+            ambient_task = asyncio.create_task(listener.run_maintenance())
 
         # ---- optional sensor threads -------------------------------------
         rfid_source = None
@@ -430,6 +419,12 @@ async def run(
 
     finally:
         # Belt and braces. Every path lands here.
+        if ambient_task is not None:
+            ambient_task.cancel()
+            try:
+                await ambient_task
+            except (asyncio.CancelledError, Exception):
+                pass
         for s in sources:
             s.stop()
         if plug is not None:
