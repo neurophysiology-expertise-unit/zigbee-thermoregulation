@@ -81,6 +81,29 @@ raise it rather than working around it.
 7. **The stuck-on latch is sticky.** It requires operator `reset_latch()` after
    physical inspection. Do not make it auto-release — that oscillates.
 8. **Lamp OFF at startup, on any exception, on any signal, on any exit path.**
+9. **`ground_truth` selects the REGULATION source, never what safety sees.**
+   `Controller.step(..., ground_truth=)` picks which reading the controller
+   pursues (`auto`/`body`/`ambient`), but `safety.evaluate()` always runs on
+   BOTH real readings. A body hard-ceiling breach must still LOCKOUT while
+   regulating on ambient, and vice versa. Choosing a source that is then
+   absent is a non-latched LOCKOUT (fail cold, self-corrects) — never a
+   silent switch to the other source.
+
+## GUI mode model
+
+The GUI (`gui.py`) has ONE mode toggle: **Freerun** or **Auto**.
+- **Freerun** = `manual_override` set; operator drives the lamp with Lamp
+  ON/OFF (default OFF). A recording started here is `open_loop`.
+- **Auto** = `manual_override` clear; the controller regulates, on the source
+  chosen in the **ground truth** dropdown. A recording started here is
+  `closed_loop`. Loop mode is DERIVED from the mode — there is no separate
+  open/closed selector (that was redundant and has been removed).
+
+Ground truth defaults to **ambient**: the RFID/body reader is killed by the
+lamp's EMI while it runs (confirmed — `raw_rfid_age_s` climbs to tens of
+seconds the instant the lamp comes on, reads resume the instant it's off), so
+body is not a trustworthy continuous regulation source during heating on this
+rig. This is a hardware/EMI limitation, not a software one.
 
 ## Before any change to safety.py / controller.py / bus.py
 

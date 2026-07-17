@@ -64,16 +64,57 @@ class Controller:
         body: Optional[Reading],
         ambient: Optional[Reading],
         now: Optional[float] = None,
+        ground_truth: str = "auto",
     ) -> Decision:
+        """ground_truth selects which reading REGULATES the lamp:
+          "auto"    -- body if present, else ambient (original behaviour)
+          "body"    -- regulate on body only; if body is absent, refuse to
+                       heat (a non-latched LOCKOUT, self-correcting when body
+                       returns). Chosen when body is the deliberate target.
+          "ambient" -- regulate on ambient only, ignoring body entirely for
+                       regulation. Used when body cannot be trusted during
+                       heating (e.g. RFID killed by lamp EMI).
+
+        Safety ALWAYS evaluates BOTH real readings regardless of this: a body
+        hard-ceiling breach still fires even when regulating on ambient, and
+        vice versa. ground_truth changes only which value the controller
+        pursues, never what the safety supervisor is allowed to see.
+        """
         now = now if now is not None else time.monotonic()
         c = self.cfg
 
-        # --- Safety first. Always. -----------------------------------------
+        # --- Safety first. Always. On the TRUE readings, never the
+        #     ground-truth-filtered ones. -----------------------------------
         verdict = self.safety.evaluate(body, ambient, now)
         if not verdict.allow_heat:
             on = self._apply(False, now, force=True)   # OFF ignores dwell
             self.safety.note_lamp_command(on, now)
             return Decision(on, State.LOCKOUT, verdict.reason, latched=verdict.latched)
+
+        # --- Apply the ground-truth source restriction ---------------------
+        # reg_body is what the regulator is allowed to pursue; None routes it
+        # to ambient-only control. The chosen source going missing is a
+        # non-latched LOCKOUT (fail cold, recovers on its own) rather than a
+        # silent switch to the other source, which would violate the operator's
+        # explicit choice of what "ground truth" means.
+        if ground_truth == "body":
+            if body is None:
+                on = self._apply(False, now, force=True)
+                self.safety.note_lamp_command(on, now)
+                return Decision(on, State.LOCKOUT,
+                                "ground_truth=body but no usable body reading",
+                                latched=False)
+            reg_body = body
+        elif ground_truth == "ambient":
+            if ambient is None:
+                on = self._apply(False, now, force=True)
+                self.safety.note_lamp_command(on, now)
+                return Decision(on, State.LOCKOUT,
+                                "ground_truth=ambient but no usable ambient reading",
+                                latched=False)
+            reg_body = None            # force the ambient-only regulation path
+        else:  # "auto"
+            reg_body = body
 
         # --- Ambient ceiling as a soft regulator, always active -------------
         # Even in NORMAL we refuse to heat if ambient is at/above its setpoint.
@@ -82,7 +123,8 @@ class Controller:
             and ambient.value >= c.ambient_setpoint_c + c.ambient_deadband_c
         )
 
-        if body is not None:
+        if reg_body is not None:
+            body = reg_body
             state = State.NORMAL
             if ambient_blocks:
                 want, why = False, (

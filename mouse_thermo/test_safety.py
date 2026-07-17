@@ -60,6 +60,40 @@ def test_no_body_falls_back_to_ambient_control():
     assert d.lamp_on is False and d.state is State.FALLBACK
 
 
+def test_ground_truth_ambient_ignores_body_for_regulation():
+    """ground_truth=ambient regulates on ambient even when a valid body
+    reading is present -- used when the lamp's EMI makes body untrustworthy."""
+    sup, ctrl = mk()
+    # Body is cold (would normally drive heat ON), but ambient is above its
+    # cap. Regulating on ambient must keep the lamp OFF.
+    d = ctrl.step(R(33.0), R(29.5), ground_truth="ambient")
+    assert d.lamp_on is False and d.state is State.FALLBACK
+    # Cold ambient with a hot body: ambient-regulation heats regardless of body.
+    d = ctrl.step(R(38.0), R(22.0), ground_truth="ambient")
+    assert d.lamp_on is True and d.state is State.FALLBACK
+
+
+def test_ground_truth_body_locks_out_when_body_missing():
+    """If body is the chosen ground truth and it disappears (e.g. RFID lost),
+    refuse to heat -- do NOT silently fall back to ambient. Non-latched so it
+    recovers the moment body returns."""
+    sup, ctrl = mk()
+    d = ctrl.step(None, R(22.0), ground_truth="body")   # cold room, but no body
+    assert d.lamp_on is False and d.state is State.LOCKOUT
+    assert d.latched is False
+    # body returns -> regulates normally again
+    d = ctrl.step(R(34.0), R(22.0), ground_truth="body")
+    assert d.lamp_on is True and d.state is State.NORMAL
+
+
+def test_ground_truth_never_blinds_safety():
+    """A body hard-ceiling breach must LOCKOUT even while regulating on
+    ambient -- ground_truth changes regulation, never what safety sees."""
+    sup, ctrl = mk(body_max_c=38.5)
+    d = ctrl.step(R(39.0), R(22.0), ground_truth="ambient")
+    assert d.lamp_on is False and d.state is State.LOCKOUT and sup.latched
+
+
 def test_ambient_cap_overrides_cold_body():
     """The core requirement: a cold mouse does NOT license an overheated box."""
     sup, ctrl = mk()

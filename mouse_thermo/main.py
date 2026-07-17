@@ -109,6 +109,7 @@ async def run(
     manual_override: Optional[threading.Event] = None,
     manual_on: Optional[threading.Event] = None,
     safety_bypass: Optional[threading.Event] = None,
+    ground_truth_getter: Optional[Callable[[], str]] = None,
     on_ready: Optional[Callable[[SessionHandle], None]] = None,
 ) -> int:
     cfg.validate()
@@ -269,7 +270,13 @@ async def run(
                     body_ch.push(plug.body)
                 body, amb = body_ch.get(), amb_ch.get()
 
-            decision = ctrl.step(body, amb, now)
+            # Read the operator's ground-truth choice fresh each tick. The
+            # getter reads a plain string attribute the GUI thread owns --
+            # safe cross-thread under the GIL, and it never touches a Qt
+            # widget from this thread. Default "auto" preserves original
+            # behaviour when no getter is supplied (CLI, tests).
+            ground_truth = ground_truth_getter() if ground_truth_getter else "auto"
+            decision = ctrl.step(body, amb, now, ground_truth=ground_truth)
             handle.last_decision = decision
 
             # Manual override substitutes the CONTROLLER's regulation choice
@@ -352,6 +359,7 @@ async def run(
                 reason=decision.reason,
                 manual_override=bool(manual_override and manual_override.is_set()),
                 safety_bypass_active=bypass_active,
+                ground_truth=ground_truth,
                 raw_rfid_id=raw_rfid_id,
                 raw_rfid_c=raw_rfid_c,
                 raw_rfid_age_s=raw_rfid_age_s,

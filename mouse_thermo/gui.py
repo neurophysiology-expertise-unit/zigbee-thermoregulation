@@ -29,6 +29,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QButtonGroup,
     QComboBox,
     QFileDialog,
     QGridLayout,
@@ -75,6 +76,13 @@ class MainWindow(QMainWindow):
         # not a setting that could silently carry into a later real run.
         self.safety_bypass = threading.Event()
 
+        # Plain string owned by the GUI thread, read cross-thread by the
+        # control loop via a getter (safe under the GIL; no Qt widget is
+        # touched from the control thread). Default ambient: body/RFID is
+        # unreliable while the lamp runs (EMI), so ambient is the trustworthy
+        # regulation source out of the box.
+        self._ground_truth = "ambient"
+
         # Captured before any GUI override, so unchecking "use custom
         # setpoints" has something to revert to.
         self._orig_body_setpoint_c = cfg.control.body_setpoint_c
@@ -91,10 +99,11 @@ class MainWindow(QMainWindow):
         self._last_sweep_idx: Optional[int] = None
 
         self._build_ui()
-        # Apply the combo's default selection ("Manual OFF") to the actual
-        # flags -- connecting currentIndexChanged happens after addItem(),
-        # so the initial index-0 selection never fired the handler on its own.
-        self._on_freerun_mode_changed(self.combo_freerun.currentIndex())
+        # Apply the default mode (Freerun, lamp off) and default ground truth
+        # explicitly: the initial checked/selected states were set during UI
+        # construction and never fired their handlers on their own.
+        self._set_mode("freerun")
+        self._ground_truth = self.combo_ground_truth.currentData()
 
         self.session_thread = threading.Thread(target=self._run_session, daemon=True)
         self.session_thread.start()
@@ -112,6 +121,7 @@ class MainWindow(QMainWindow):
                 manual_override=self.manual_override,
                 manual_on=self.manual_on,
                 safety_bypass=self.safety_bypass,
+                ground_truth_getter=lambda: self._ground_truth,
                 on_ready=self._on_ready,
             ))
         except Exception:
@@ -181,22 +191,55 @@ class MainWindow(QMainWindow):
             grid.addWidget(lbl, i, 1)
         outer.addLayout(grid)
 
-        freerun_box = QGroupBox("Freerun (overrides the automatic controller, "
-                                 "never a safety LOCKOUT)")
-        freerun_layout = QHBoxLayout(freerun_box)
-        freerun_layout.addWidget(QLabel("Lamp mode:"))
-        self.combo_freerun = QComboBox()
-        # "Manual OFF" first/default: on startup you're just watching the
-        # signals come in, lamp held off, before ever engaging AUTO -- not
-        # AUTO-by-default, which immediately evaluates LOCKOUT before you've
-        # had a chance to check anything.
-        self.combo_freerun.addItem("Manual OFF", userData="off")
-        self.combo_freerun.addItem("Manual ON", userData="on")
-        self.combo_freerun.addItem("AUTO (automatic control)", userData="auto")
-        self.combo_freerun.currentIndexChanged.connect(self._on_freerun_mode_changed)
-        freerun_layout.addWidget(self.combo_freerun)
-        outer.addWidget(freerun_box)
-        self.freerun_widgets = [self.combo_freerun]
+        mode_box = QGroupBox("Mode")
+        mode_v = QVBoxLayout(mode_box)
+
+        # One Freerun / Auto toggle, exclusive. Freerun = you drive the lamp
+        # by hand; Auto = the closed-loop controller drives it. Default
+        # Freerun (lamp held off) so startup is observe-only, not AUTO
+        # immediately evaluating LOCKOUT before you've checked anything.
+        toggle_row = QHBoxLayout()
+        self.btn_mode_freerun = QPushButton("Freerun")
+        self.btn_mode_auto = QPushButton("Auto")
+        for b in (self.btn_mode_freerun, self.btn_mode_auto):
+            b.setCheckable(True)
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.setExclusive(True)
+        self.mode_group.addButton(self.btn_mode_freerun)
+        self.mode_group.addButton(self.btn_mode_auto)
+        self.btn_mode_freerun.setChecked(True)
+        self.btn_mode_freerun.clicked.connect(lambda: self._set_mode("freerun"))
+        self.btn_mode_auto.clicked.connect(lambda: self._set_mode("auto"))
+        toggle_row.addWidget(self.btn_mode_freerun)
+        toggle_row.addWidget(self.btn_mode_auto)
+        mode_v.addLayout(toggle_row)
+
+        # Freerun sub-controls: manual lamp ON / OFF.
+        self.freerun_row = QHBoxLayout()
+        self.freerun_row.addWidget(QLabel("Freerun lamp:"))
+        self.btn_lamp_on = QPushButton("Lamp ON")
+        self.btn_lamp_off = QPushButton("Lamp OFF")
+        self.btn_lamp_on.clicked.connect(self._manual_lamp_on)
+        self.btn_lamp_off.clicked.connect(self._manual_lamp_off)
+        self.freerun_row.addWidget(self.btn_lamp_on)
+        self.freerun_row.addWidget(self.btn_lamp_off)
+        mode_v.addLayout(self.freerun_row)
+
+        # Auto sub-control: which sensor is the regulation ground truth.
+        gt_row = QHBoxLayout()
+        gt_row.addWidget(QLabel("Auto ground truth:"))
+        self.combo_ground_truth = QComboBox()
+        self.combo_ground_truth.addItem("Ambient (Zigbee)", userData="ambient")
+        self.combo_ground_truth.addItem("Body (RFID)", userData="body")
+        self.combo_ground_truth.currentIndexChanged.connect(self._on_ground_truth_changed)
+        gt_row.addWidget(self.combo_ground_truth)
+        mode_v.addLayout(gt_row)
+
+        outer.addWidget(mode_box)
+        # Widgets locked while a recording is active (mode must not change
+        # mid-trial). The lamp buttons are additionally gated by mode below.
+        self.mode_widgets = [self.btn_mode_freerun, self.btn_mode_auto,
+                             self.combo_ground_truth]
 
         setpoint_box = QGroupBox("Closed-loop setpoints (live-tunable, "
                                   "checked against the hard safety max before applying)")
@@ -233,13 +276,15 @@ class MainWindow(QMainWindow):
         animal_row.addWidget(self.edit_animal_id)
         rec_layout.addLayout(animal_row)
 
-        mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("Loop mode:"))
-        self.combo_loop_mode = QComboBox()
-        self.combo_loop_mode.addItem("Closed loop (automatic control)", userData="closed_loop")
-        self.combo_loop_mode.addItem("Open loop (fixed lamp state, no feedback)", userData="open_loop")
-        mode_row.addWidget(self.combo_loop_mode)
-        rec_layout.addLayout(mode_row)
+        # Loop mode is no longer a separate choice -- it is derived from the
+        # current Mode: recording in Auto is closed-loop, recording in Freerun
+        # is open-loop. This removes the old redundant "AUTO vs Closed loop"
+        # double-selector the operator flagged.
+        note = QLabel("Loop mode follows Mode above: Auto -> closed loop, "
+                      "Freerun -> open loop.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: gray;")
+        rec_layout.addWidget(note)
 
         rec_btn_row = QHBoxLayout()
         self.btn_record = QPushButton("Start Recording")
@@ -250,7 +295,7 @@ class MainWindow(QMainWindow):
         rec_layout.addLayout(rec_btn_row)
         outer.addWidget(rec_box)
         self.recording_mode_widgets = [
-            self.combo_loop_mode, self.edit_animal_id, self.edit_output_dir, self.btn_browse_output,
+            self.edit_animal_id, self.edit_output_dir, self.btn_browse_output,
         ]
 
         window_box = QGroupBox("Plot window (recent-only, not the whole session)")
@@ -305,28 +350,54 @@ class MainWindow(QMainWindow):
         self._last_sweep_idx = None
         self.ax.set_xlim(0.0, seconds)
 
-    # ---- manual control ------------------------------------------------------
+    # ---- mode: Freerun / Auto ------------------------------------------------
 
-    def _on_freerun_mode_changed(self, index: int) -> None:
-        mode = self.combo_freerun.itemData(index)
-        if mode == "on":
-            self.manual_on.set()
-            self.manual_override.set()
-        elif mode == "off":
-            self.manual_on.clear()
-            self.manual_override.set()
+    def _set_mode(self, mode: str) -> None:
+        """Freerun: manual override on, operator drives the lamp by hand.
+        Auto: manual override off, the closed-loop controller drives it."""
+        if mode == "freerun":
+            self.manual_override.set()   # controller decision is overridden...
+            # ...by whatever Lamp ON/OFF the operator last pressed; default OFF
+            # until they press ON, so entering Freerun never turns heat on.
+            self._sync_mode_controls("freerun")
         else:  # "auto"
             self.manual_override.clear()
+            self._sync_mode_controls("auto")
 
-    def _set_freerun_combo(self, mode: str) -> None:
-        """Update the displayed selection without re-triggering the handler
-        (used when Recording start/stop changes manual_override/manual_on
-        itself, so the dropdown doesn't silently drift out of sync)."""
-        i = self.combo_freerun.findData(mode)
-        if i >= 0 and self.combo_freerun.currentIndex() != i:
-            self.combo_freerun.blockSignals(True)
-            self.combo_freerun.setCurrentIndex(i)
-            self.combo_freerun.blockSignals(False)
+    def _sync_mode_controls(self, mode: str) -> None:
+        freerun = (mode == "freerun")
+        # Lamp buttons only make sense in Freerun; ground truth only in Auto.
+        # Both are additionally disabled while a recording is active (handled
+        # in _start_recording / _stop_recording).
+        recording = self.handle is not None and self.handle.recording.active
+        self.btn_lamp_on.setEnabled(freerun and not recording)
+        self.btn_lamp_off.setEnabled(freerun and not recording)
+        self.combo_ground_truth.setEnabled((not freerun) and not recording)
+        # Keep the toggle buttons' checked state in sync (e.g. when a
+        # recording forces a mode).
+        self.btn_mode_freerun.setChecked(freerun)
+        self.btn_mode_auto.setChecked(not freerun)
+
+    def _set_mode_silently(self, mode: str) -> None:
+        """Force the displayed mode + flags without the user having clicked --
+        used by recording start/stop. Buttons are exclusive-grouped, so
+        setChecked alone is enough; flags are set directly."""
+        if mode == "freerun":
+            self.manual_override.set()
+        else:
+            self.manual_override.clear()
+        self._sync_mode_controls(mode)
+
+    def _manual_lamp_on(self) -> None:
+        self.manual_on.set()
+        self.manual_override.set()
+
+    def _manual_lamp_off(self) -> None:
+        self.manual_on.clear()
+        self.manual_override.set()
+
+    def _on_ground_truth_changed(self, index: int) -> None:
+        self._ground_truth = self.combo_ground_truth.itemData(index)
 
     # ---- closed-loop setpoints -----------------------------------------------
 
@@ -429,26 +500,12 @@ class MainWindow(QMainWindow):
             self.lbl_recording.setStyleSheet("color: red; font-weight: bold;")
             return
 
-        mode = self.combo_loop_mode.currentData()
-
-        if mode == "closed_loop":
-            # Honest closed-loop data: the automatic controller must be the
-            # only thing commanding the lamp.
-            self.manual_override.clear()
-            self._set_freerun_combo("auto")
-        else:
-            # Open loop: freeze whatever the lamp is doing right now (set it
-            # via Freerun first if you want a specific state) and hold it --
-            # no automatic regulation, no further manual changes once
-            # recording starts.
-            current = self.handle.plug.state()
-            if current:
-                self.manual_on.set()
-                self._set_freerun_combo("on")
-            else:
-                self.manual_on.clear()
-                self._set_freerun_combo("off")
-            self.manual_override.set()
+        # Loop mode is derived from the current Mode, not chosen separately:
+        # Auto -> closed loop, Freerun -> open loop. Whatever the operator has
+        # already set (including which lamp state, in Freerun) is simply
+        # frozen for the trial; nothing about the lamp changes at Start.
+        in_auto = self.btn_mode_auto.isChecked()
+        mode = "closed_loop" if in_auto else "open_loop"
 
         output_dir = self.edit_output_dir.text().strip() or os.path.abspath("recordings")
         date_str = datetime.datetime.now().strftime("%y%m%d")
@@ -456,16 +513,23 @@ class MainWindow(QMainWindow):
         path = os.path.join(output_dir, f"{date_str}_{animal_id}_{session_num}.jsonl")
         self.handle.recording.start(path, mode, self.cfg.to_dict())
 
-        for w in self.freerun_widgets + self.recording_mode_widgets:
+        # Lock everything that defines the trial: mode toggle, ground truth,
+        # lamp buttons, animal id, output dir. The mode must not change under
+        # a running recording (it would contradict the file's loop-mode label).
+        for w in (self.mode_widgets + self.recording_mode_widgets
+                  + [self.btn_lamp_on, self.btn_lamp_off]):
             w.setEnabled(False)
         self.btn_record.setText("Stop Recording")
-        self.lbl_recording.setText(f"recording [{mode}] -> {path}")
+        gt = f", ground truth = {self._ground_truth}" if mode == "closed_loop" else ""
+        self.lbl_recording.setText(f"recording [{mode}{gt}] -> {path}")
         self.lbl_recording.setStyleSheet("")
 
     def _stop_recording(self) -> None:
         self.handle.recording.stop()
-        for w in self.freerun_widgets + self.recording_mode_widgets:
+        for w in self.mode_widgets + self.recording_mode_widgets:
             w.setEnabled(True)
+        # Restore lamp-button enablement per the current mode (not blanket on).
+        self._sync_mode_controls("freerun" if self.btn_mode_freerun.isChecked() else "auto")
         self.btn_record.setText("Start Recording")
         self.lbl_recording.setText("not recording")
 
@@ -547,14 +611,15 @@ class MainWindow(QMainWindow):
         if decision is not None:
             self.lbl_state.setText(decision.state.value)
             self.lbl_reason.setText(decision.reason)
-        if self.handle.recording.active:
-            self.lbl_mode.setText(f"RECORDING [{self.handle.recording.mode}]")
-        elif self.manual_override.is_set():
-            self.lbl_mode.setText("FREERUN (manual override)")
+        if self.manual_override.is_set():
+            base = "FREERUN (manual)"
         else:
-            self.lbl_mode.setText("AUTO")
+            base = f"AUTO (ground truth: {self._ground_truth})"
+        if self.handle.recording.active:
+            base = f"RECORDING [{self.handle.recording.mode}] -- {base}"
         if self.safety_bypass.is_set():
-            self.lbl_mode.setText(self.lbl_mode.text() + "  [SAFETY BYPASS ACTIVE]")
+            base += "  [SAFETY BYPASS ACTIVE]"
+        self.lbl_mode.setText(base)
 
         # Radar/ECG-monitor sweep: position within the CURRENT cycle of the
         # window, not elapsed session time -- wraps back to 0 every
