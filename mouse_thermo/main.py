@@ -318,6 +318,12 @@ async def run(
                 await plug.set_async(desired)
                 last_cmd_sent_t = now
 
+            # Actively refresh confirmed state + power draw. This plug sends
+            # no attribute reports, so without polling power_w stays null
+            # forever and we have no way to tell "commanded ON and actually
+            # drawing 150W" from "commanded ON but the bulb is dead".
+            await plug.poll_async()
+
             wd.kick()
             # Raw, pre-plausibility-gate RFID state. Logged because a null
             # body_c is ambiguous on its own: it cannot distinguish "the

@@ -45,6 +45,17 @@ class Plug(ABC):
         """Actuator feedback: did the lamp actually draw current? None if unsupported."""
         return None
 
+    async def poll_async(self) -> None:
+        """Actively refresh state()/power_w() from the device.
+
+        Default no-op: simulated actuators are always self-consistent. Real
+        ones override this, because a device that never sends attribute
+        reports leaves passive state permanently stale (observed: power_w
+        null for an entire session on hardware that could be read on demand).
+        Must never raise -- the control loop calls this every tick.
+        """
+        return None
+
     def last_seen_age(self, now: float) -> Optional[float]:
         """Seconds since the device last sent ANYTHING (any packet, not just
         an on/off report) -- a link-health signal distinct from state(),

@@ -119,6 +119,51 @@ class ZigbeePlug(Plug):
             log.warning("could not read initial plug on_off state (non-fatal); "
                         "state stays unknown until the first report", exc_info=True)
 
+    async def poll_async(self) -> None:
+        """Actively read on_off and power. Call periodically from the control
+        loop.
+
+        This plug does not send attribute reports (power_w was null for every
+        sample of a multi-hour session despite configure_reporting succeeding
+        and a healthy link), so passively waiting for them yields nothing.
+        Polling is what makes power draw usable as REAL actuator feedback:
+        "commanded ON and drawing 150W" is proof the lamp lit, whereas
+        "commanded ON and drawing 0.4W" means a dead bulb or a failed relay --
+        a distinction no on_off value can make, since on_off only reports what
+        the relay *thinks* it did.
+
+        Non-fatal: never let a failed poll take down the control loop, and
+        never let it mark state as known when it isn't.
+        """
+        try:
+            onoff = self.ep.in_clusters[OnOff.cluster_id]
+            rd = await onoff.read_attributes(["on_off"])
+            val = rd[0].get("on_off", rd[0].get(OnOff.AttributeDefs.on_off.id))
+            if val is not None:
+                self._confirmed = bool(val)
+        except Exception as e:
+            log.debug("plug on_off poll failed: %r", e)
+
+        try:
+            from zigpy.zcl.clusters.homeautomation import ElectricalMeasurement
+            em = self.ep.in_clusters.get(ElectricalMeasurement.cluster_id)
+            if em is None:
+                return
+            rd = await em.read_attributes(["active_power"])
+            val = rd[0].get("active_power",
+                            rd[0].get(ElectricalMeasurement.AttributeDefs.active_power.id))
+            if val is not None:
+                self._power_w = self._scale_power(float(val))
+        except Exception as e:
+            log.debug("plug active_power poll failed: %r", e)
+
+    def _scale_power(self, raw: float) -> float:
+        """active_power is reported in units of acPowerDivisor; Sonoff plugs
+        commonly use 1 (watts) but some report deci-watts. Left as raw here
+        rather than guessed at -- see _PlugListener's note. Verify against a
+        known load before trusting the absolute magnitude."""
+        return raw
+
     async def set_async(self, on: bool) -> None:
         onoff = self.ep.in_clusters[OnOff.cluster_id]
         # Let exceptions propagate: a failed command must be visible.
