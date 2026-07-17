@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QPushButton,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -141,23 +142,11 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
+        outer.setContentsMargins(6, 6, 6, 6)
+        outer.setSpacing(4)
 
-        output_row = QHBoxLayout()
-        output_row.addWidget(QLabel("Save recordings to:"))
-        self.edit_output_dir = QLineEdit(os.path.abspath("recordings"))
-        output_row.addWidget(self.edit_output_dir)
-        self.btn_browse_output = QPushButton("Browse...")
-        self.btn_browse_output.clicked.connect(self._browse_output_dir)
-        output_row.addWidget(self.btn_browse_output)
-        outer.addLayout(output_row)
-
-        bypass_row = QHBoxLayout()
-        self.chk_safety_bypass = QCheckBox("Safety bypass (TESTING ONLY) -- lets manual "
-                                            "control override even a hard-ceiling lockout")
-        self.chk_safety_bypass.toggled.connect(self._on_safety_bypass_toggled)
-        bypass_row.addWidget(self.chk_safety_bypass)
-        outer.addLayout(bypass_row)
-
+        # Critical warning banner: always visible, above the tabs, so a safety
+        # bypass can never be hidden behind an inactive tab.
         self.lbl_bypass_banner = QLabel(
             "⚠ SAFETY BYPASS ACTIVE -- hard-ceiling lockout can be overridden ⚠"
         )
@@ -168,6 +157,34 @@ class MainWindow(QMainWindow):
         self.lbl_bypass_banner.setVisible(False)
         outer.addWidget(self.lbl_bypass_banner)
 
+        tabs = QTabWidget()
+        outer.addWidget(tabs, 1)   # the tabs take all remaining space
+
+        monitor_tab = QWidget()
+        monitor_v = QVBoxLayout(monitor_tab)
+        setup_tab = QWidget()
+        setup_v = QVBoxLayout(setup_tab)
+        tabs.addTab(monitor_tab, "Monitor")
+        tabs.addTab(setup_tab, "Setup")
+
+        # ================= SETUP tab =================
+        output_row = QHBoxLayout()
+        output_row.addWidget(QLabel("Save recordings to:"))
+        self.edit_output_dir = QLineEdit(os.path.abspath("recordings"))
+        output_row.addWidget(self.edit_output_dir)
+        self.btn_browse_output = QPushButton("Browse...")
+        self.btn_browse_output.clicked.connect(self._browse_output_dir)
+        output_row.addWidget(self.btn_browse_output)
+        setup_v.addLayout(output_row)
+
+        bypass_row = QHBoxLayout()
+        self.chk_safety_bypass = QCheckBox("Safety bypass (TESTING ONLY) -- lets manual "
+                                            "control override even a hard-ceiling lockout")
+        self.chk_safety_bypass.toggled.connect(self._on_safety_bypass_toggled)
+        bypass_row.addWidget(self.chk_safety_bypass)
+        setup_v.addLayout(bypass_row)
+
+        # ================= MONITOR tab =================
         grid = QGridLayout()
         self.lbl_body = QLabel("--")
         self.lbl_ambient = QLabel("--")
@@ -194,8 +211,11 @@ class MainWindow(QMainWindow):
         for i, (name, lbl) in enumerate(rows):
             grid.addWidget(QLabel(name + ":"), i, 0)
             grid.addWidget(lbl, i, 1)
-        outer.addLayout(grid)
+        # Readout stays compact at the top; the plot below gets the space.
+        grid.setColumnStretch(1, 1)
+        monitor_v.addLayout(grid)
 
+        # ================= SETUP tab (continued) =================
         mode_box = QGroupBox("Mode")
         mode_v = QVBoxLayout(mode_box)
 
@@ -245,7 +265,7 @@ class MainWindow(QMainWindow):
         gt_row.addWidget(self.combo_ground_truth)
         mode_v.addLayout(gt_row)
 
-        outer.addWidget(mode_box)
+        setup_v.addWidget(mode_box)
         # Widgets locked while a recording is active (mode must not change
         # mid-trial). The lamp buttons are additionally gated by mode below.
         self.mode_widgets = [self.btn_mode_freerun, self.btn_mode_auto,
@@ -274,7 +294,7 @@ class MainWindow(QMainWindow):
 
         self.lbl_setpoint_status = QLabel("using config file values")
         setpoint_grid.addWidget(self.lbl_setpoint_status, 3, 0, 1, 2)
-        outer.addWidget(setpoint_box)
+        setup_v.addWidget(setpoint_box)
 
         rec_box = QGroupBox("Recording")
         rec_layout = QVBoxLayout(rec_box)
@@ -303,7 +323,8 @@ class MainWindow(QMainWindow):
         rec_btn_row.addWidget(self.btn_record)
         rec_btn_row.addWidget(self.lbl_recording)
         rec_layout.addLayout(rec_btn_row)
-        outer.addWidget(rec_box)
+        setup_v.addWidget(rec_box)
+        setup_v.addStretch(1)   # keep setup widgets stacked at top, no dead space
         self.recording_mode_widgets = [
             self.edit_animal_id, self.edit_output_dir, self.btn_browse_output,
         ]
@@ -319,7 +340,7 @@ class MainWindow(QMainWindow):
             lambda i: self._set_plot_window(self.combo_plot_window.itemData(i))
         )
         window_layout.addWidget(self.combo_plot_window)
-        outer.addWidget(window_box)
+        monitor_v.addWidget(window_box)
 
         self.fig = Figure(figsize=(6, 3))
         self.ax = self.fig.add_subplot(111)
@@ -337,7 +358,7 @@ class MainWindow(QMainWindow):
         self.ax.set_ylim(PLOT_Y_MIN, PLOT_Y_MAX)  # fixed -- not autoscaled to the data
         self.ax.legend(loc="upper right")
         self.canvas = FigureCanvas(self.fig)
-        outer.addWidget(self.canvas)
+        monitor_v.addWidget(self.canvas, 1)   # plot takes all remaining space
 
     # ---- safety bypass --------------------------------------------------------
 
