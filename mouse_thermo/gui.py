@@ -58,6 +58,7 @@ UI_PERIOD_MS = 500     # UI refresh rate; independent of the control loop's own 
 SWEEP_RESOLUTION = 200  # samples across one full sweep, independent of poll rate
 SWEEP_ERASE_FRACTION = 0.05  # fraction of the sweep width blanked just ahead of the cursor
 PLOT_Y_MIN, PLOT_Y_MAX = 20.0, 50.0  # fixed temp axis -- not autoscaled to the data
+LAMP_ON_TINT = (1.0, 0.0, 0.0, 0.22)  # translucent red plot bg while lamp is on
 
 
 class MainWindow(QMainWindow):
@@ -354,6 +355,11 @@ class MainWindow(QMainWindow):
         (self.line_body,) = self.ax.plot([], [], label="body")
         (self.line_amb,) = self.ax.plot([], [], label="ambient")
         self.cursor_line = self.ax.axvline(0.0, color="0.5", linewidth=1, linestyle="--")
+        # Live "lamp on" indicator: the whole plot background goes red while
+        # the lamp relay is on. Default axes facecolor is what we restore to
+        # when it's off. During pulse mode this flashes in step with the
+        # on/off cycle, which is a useful visual confirmation of the pulse.
+        self._ax_facecolor_off = self.ax.get_facecolor()
         self.ax.set_xlim(0.0, self._plot_window_s)
         self.ax.set_ylim(PLOT_Y_MIN, PLOT_Y_MAX)  # fixed -- not autoscaled to the data
         self.ax.legend(loc="upper right")
@@ -720,6 +726,11 @@ class MainWindow(QMainWindow):
         self.line_body.set_data(self._sweep_xs, self._sweep_body)
         self.line_amb.set_data(self._sweep_xs, self._sweep_amb)
         self.cursor_line.set_xdata([phase * window, phase * window])
+        # Live lamp-on indicator: tint the plot red while the relay is on.
+        # Uses the same lamp_state as the readout so they never disagree; a
+        # None (unknown) state shows no tint rather than a false one.
+        self.ax.set_facecolor(LAMP_ON_TINT if lamp_state is True
+                              else self._ax_facecolor_off)
         # No relim()/autoscale_view() -- both axes are fixed (x to the sweep
         # window, y to PLOT_Y_MIN/MAX), so nothing needs to move each tick.
         self.canvas.draw_idle()
