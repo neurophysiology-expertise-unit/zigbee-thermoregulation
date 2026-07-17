@@ -72,6 +72,15 @@ class Esp32Config:
     port: str = "/dev/ttyUSB1"
     baudrate: int = 115200
     role: str = "ambient"                 # "ambient" | "body" | "log_only"
+    # Which value from the hamsterpod frame feeds the channel:
+    #   t1 / t2  -- the two DS18B20 probes
+    #   ir_mean  -- mean of the AMG8833 8x8 array
+    #   ir_max   -- hottest pixel of the array
+    probe: str = "t1"
+    # Optional: only accept frames from this ESP-NOW node id (the firmware's
+    # packet.id, e.g. "esp32-s2-sensor1"). Empty accepts any node -- fine with
+    # one node, but set it once more than one is broadcasting.
+    sensor_id: str = ""
 
 
 @dataclass
@@ -107,6 +116,15 @@ class Config:
             raise ValueError("body_setpoint_c outside body_valid_range")
         if s.watchdog_timeout_s <= c.loop_period_s:
             raise ValueError("watchdog_timeout_s must exceed loop_period_s")
+        if self.esp32.enabled:
+            # Crash loudly rather than degrade: a typo here would otherwise
+            # only surface as a silently dead sensor at runtime.
+            if self.esp32.probe not in ("t1", "t2", "ir_mean", "ir_max"):
+                raise ValueError(
+                    f"esp32.probe must be t1|t2|ir_mean|ir_max, got {self.esp32.probe!r}")
+            if self.esp32.role not in ("ambient", "body", "log_only"):
+                raise ValueError(
+                    f"esp32.role must be ambient|body|log_only, got {self.esp32.role!r}")
         if require_plug_ieee and not self.simulate and not self.zigbee.plug_ieee:
             raise ValueError("zigbee.plug_ieee required when not simulating")
 

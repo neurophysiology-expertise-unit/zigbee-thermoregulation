@@ -46,7 +46,7 @@ Sonoff SNZB-02 ───┘    (stale+range)     (veto)      (hysteresis)   (zig
 | `watchdog.py` | Software watchdog, forces lamp off if main loop stalls |
 | `logger.py` | Unified JSONL, one monotonic clock |
 | `sensors/rfid_chip.py` | Adapter for the UID Devices URH-2 reader (AnyCage protocol) |
-| `sensors/esp32_serial.py` | **STUB** — adapter for the ESP32 probe |
+| `sensors/esp32_serial.py` | Adapter for the hamsterpod ESP32-S2/ESP-NOW gateway (binary frames) |
 | `gui.py` | PySide6 live monitor + manual override, runs `main.run()` in-process |
 
 `gui.py` is not a separate tool -- only one process can hold the Zigbee
@@ -112,9 +112,32 @@ Zigbee devices paired: SONOFF S60ZBTPF plug, SONOFF SNZB-02P ambient sensor
 COM port live in the gitignored `config.local.yaml`, not `config.yaml`.
 
 **Open work:**
-1. Wire `sensors/esp32_serial.py::_parse()` → return float from one line.
-   Currently handles bare float or `{"t": 27.4}`.
+1. Plug in the hamsterpod ESP32-S2 gateway, set `esp32.port`/`enabled` in
+   `config.local.yaml`, and confirm live frames decode (adapter + tests are
+   done; only untested against the physical gateway).
 2. Tune `ambient_setpoint_c` / `body_setpoint_c` against the real box.
+
+## The ESP32 (hamsterpod) path
+
+`sensors/esp32_serial.py` speaks the gateway's **binary** USB-CDC format —
+290-byte frames of `MAC(6) | ts_us(4) | id[16] | t1 | t2 | ir[64]` — not
+newline text. Config: `esp32.probe` selects `t1|t2|ir_mean|ir_max`.
+
+**The wire format has no sync marker or length prefix.** hamsterpod's own
+`reader_esps_influx_final.py` does `read(10)` then `read(280)` and assumes it
+started aligned; attach mid-stream or drop one byte and it is misaligned
+*forever*, silently reporting floats reinterpreted from the middle of the IR
+array. Verified: doing it that way on a mid-frame join reports `0.00C` — no
+error, just a lie. Fine for a Grafana panel, not for something a heat lamp
+obeys. So this adapter re-derives alignment structurally every frame
+(`_frame_valid_at`: the `id[16]` field must be NUL-padded ASCII *and* all 66
+floats must look like temperatures). Do not "simplify" this to a bare
+sequential read.
+
+DS18B20 sentinels are rejected at the source, not left to the plausibility
+gate: `-127.0` (probe disconnected) and `85.0` (power-on value, no conversion
+completed). The bus's range would catch these *today*, but the ranges are
+operator-tunable, and these mean "no measurement" at any range.
 
 ## Known limitations — do not paper over these in code
 
