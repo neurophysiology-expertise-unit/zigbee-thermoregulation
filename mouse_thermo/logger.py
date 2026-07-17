@@ -24,10 +24,17 @@ class SessionLogger:
                lamp_cmd, lamp_state, power_w, state, reason,
                controller_wanted=None, manual_override=False,
                record_mode=None, body_setpoint_c=None, ambient_setpoint_c=None,
-               safety_bypass_active=False, lamp_commanded=None) -> None:
+               safety_bypass_active=False, lamp_commanded=None,
+               raw_rfid_id=None, raw_rfid_c=None, raw_rfid_age_s=None) -> None:
         self.write({
             "type": "sample",
             "body_c": body, "body_age_s": body_age,
+            # Raw = what the reader actually reported, before the plausibility
+            # gate. raw_rfid_age_s growing while body_c is null means the
+            # reader has stopped reading entirely (vs. reading an out-of-range
+            # value) -- the two have very different causes.
+            "raw_rfid_id": raw_rfid_id, "raw_rfid_c": raw_rfid_c,
+            "raw_rfid_age_s": raw_rfid_age_s,
             "ambient_c": ambient, "ambient_age_s": ambient_age,
             "lamp_cmd": lamp_cmd, "lamp_state": lamp_state,
             "lamp_commanded": lamp_commanded, "power_w": power_w,

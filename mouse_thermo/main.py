@@ -319,6 +319,19 @@ async def run(
                 last_cmd_sent_t = now
 
             wd.kick()
+            # Raw, pre-plausibility-gate RFID state. Logged because a null
+            # body_c is ambiguous on its own: it cannot distinguish "the
+            # reader saw the chip but the value was out of range" from "the
+            # reader saw nothing at all". Those have completely different
+            # causes (a cold bench chip vs. the reader being unable to read,
+            # e.g. EMI from the lamp), and only the raw view separates them.
+            raw_rfid_id = raw_rfid_c = raw_rfid_age_s = None
+            if rfid_source is not None:
+                _raw = rfid_source.last_raw_reading
+                if _raw is not None:
+                    raw_rfid_id, raw_rfid_c, _raw_t = _raw
+                    raw_rfid_age_s = now - _raw_t
+
             sample_kwargs = dict(
                 body=None if body is None else body.value,
                 body_age=body_ch.age(now),
@@ -333,6 +346,9 @@ async def run(
                 reason=decision.reason,
                 manual_override=bool(manual_override and manual_override.is_set()),
                 safety_bypass_active=bypass_active,
+                raw_rfid_id=raw_rfid_id,
+                raw_rfid_c=raw_rfid_c,
+                raw_rfid_age_s=raw_rfid_age_s,
                 body_setpoint_c=cfg.control.body_setpoint_c,
                 ambient_setpoint_c=cfg.control.ambient_setpoint_c,
             )
