@@ -715,7 +715,17 @@ class MainWindow(QMainWindow):
             # without touching the actual plausibility gate.
             tag_id, temp_c, _ = raw
             body_display_value = temp_c
-            self.lbl_body.setText(f"{temp_c:.2f} (raw, NOT validated/used)")
+            # Say WHY it's not used, so a LOCKOUT on ground_truth=body is
+            # self-explanatory: a room-temp bench chip reads below the
+            # physiological floor and is correctly rejected.
+            lo, hi = self.cfg.sensors.body_valid_range
+            if temp_c < lo:
+                why = f"below {lo:g}C floor -> not used"
+            elif temp_c > hi:
+                why = f"above {hi:g}C ceiling -> not used"
+            else:
+                why = "stale -> not used"
+            self.lbl_body.setText(f"{temp_c:.2f} (raw, {why})")
             self.lbl_body.setStyleSheet("color: darkorange;")
         else:
             self.lbl_body.setText("stale/unknown")
