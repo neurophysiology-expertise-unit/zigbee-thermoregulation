@@ -111,6 +111,7 @@ class MainWindow(QMainWindow):
         # Per sweep-position record of whether the lamp was ON when that point
         # was drawn -- used to shade red bands at the times the lamp was on.
         self._sweep_lamp = [False] * SWEEP_RESOLUTION
+        self._sweep_power = [float("nan")] * SWEEP_RESOLUTION  # plug power draw
         self._sweep_xs = [i / SWEEP_RESOLUTION * DEFAULT_PLOT_WINDOW_S for i in range(SWEEP_RESOLUTION)]
         self._last_sweep_idx: Optional[int] = None
         self._lamp_fill = None   # matplotlib collection for the red bands
@@ -398,7 +399,22 @@ class MainWindow(QMainWindow):
         self.cursor_line = self.ax.axvline(0.0, color="0.5", linewidth=1, linestyle="--")
         self.ax.set_xlim(0.0, self._plot_window_s)
         self.ax.set_ylim(PLOT_Y_MIN, PLOT_Y_MAX)  # fixed -- not autoscaled to the data
-        self.ax.legend(loc="upper right")
+
+        # Second y-axis: plug power draw. This is the actuator TRUTH -- with
+        # pulsing you can see current actually rise and fall, confirming the
+        # relay really cycles on/off rather than trusting the command. Range
+        # adapts (the plug's power divisor is unknown, so absolute watts are
+        # not trusted; the shape is what matters).
+        self.ax_power = self.ax.twinx()
+        self.ax_power.set_ylabel("power (W)")
+        self.ax_power.spines["top"].set_visible(False)
+        self.ax_power.xaxis.set_visible(False)
+        (self.line_power,) = self.ax_power.plot([], [], color="green",
+                                                linewidth=1, label="power")
+        self.ax_power.set_ylim(0.0, 1.0)
+
+        lines = [self.line_body, self.line_amb, self.line_power]
+        self.ax.legend(lines, [ln.get_label() for ln in lines], loc="upper right")
         self.canvas = FigureCanvas(self.fig)
         monitor_v.addWidget(self.canvas, 1)   # plot takes all remaining space
 
@@ -420,6 +436,7 @@ class MainWindow(QMainWindow):
         self._sweep_body = [float("nan")] * SWEEP_RESOLUTION
         self._sweep_amb = [float("nan")] * SWEEP_RESOLUTION
         self._sweep_lamp = [False] * SWEEP_RESOLUTION
+        self._sweep_power = [float("nan")] * SWEEP_RESOLUTION
         self._sweep_xs = [i / SWEEP_RESOLUTION * seconds for i in range(SWEEP_RESOLUTION)]
         self._last_sweep_idx = None
         self.ax.set_xlim(0.0, seconds)
@@ -749,6 +766,7 @@ class MainWindow(QMainWindow):
 
         body_val = body_display_value if body_display_value is not None else float("nan")
         amb_val = amb.value if amb is not None else float("nan")
+        power_val = power if power is not None else float("nan")
 
         # The cursor can advance several buffer slots between UI ticks (tick
         # period vs. window/resolution) -- fill the WHOLE span it swept
@@ -765,6 +783,7 @@ class MainWindow(QMainWindow):
             self._sweep_body[j] = body_val
             self._sweep_amb[j] = amb_val
             self._sweep_lamp[j] = lamp_on   # record on/off at each swept point
+            self._sweep_power[j] = power_val
         self._last_sweep_idx = idx
 
         # Blank a small span just ahead of the cursor -- that gap-ahead is
@@ -776,9 +795,15 @@ class MainWindow(QMainWindow):
             self._sweep_body[j] = float("nan")
             self._sweep_amb[j] = float("nan")
             self._sweep_lamp[j] = False
+            self._sweep_power[j] = float("nan")
 
         self.line_body.set_data(self._sweep_xs, self._sweep_body)
         self.line_amb.set_data(self._sweep_xs, self._sweep_amb)
+        self.line_power.set_data(self._sweep_xs, self._sweep_power)
+        # Adapt the power axis to the data in view (absolute watts unknown --
+        # the shape/cycling is the point). Floor keeps a flat ~0 line visible.
+        pmax = max((p for p in self._sweep_power if p == p), default=0.0)
+        self.ax_power.set_ylim(0.0, max(pmax, 1.0) * 1.2)
         self.cursor_line.set_xdata([phase * window, phase * window])
 
         # Red bands at the times the lamp was ON: a full-height fill wherever
