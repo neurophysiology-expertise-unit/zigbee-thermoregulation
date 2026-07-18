@@ -354,7 +354,18 @@ class MainWindow(QMainWindow):
         self.edit_animal_id = QLineEdit()
         self.edit_animal_id.setPlaceholderText("e.g. CA001")
         animal_row.addWidget(self.edit_animal_id)
+        # Push the run name to neucams NOW (folder=<name>) without starting.
+        # neucams disables its own record button until a run name is defined,
+        # so this lets you set the name here first and then hit record from
+        # either side (neucams or thermo Start Recording).
+        self.btn_set_name = QPushButton("Set name -> neucams")
+        self.btn_set_name.clicked.connect(self._set_run_name_to_neucams)
+        animal_row.addWidget(self.btn_set_name)
         rec_layout.addLayout(animal_row)
+
+        self.lbl_name_status = QLabel("")
+        self.lbl_name_status.setStyleSheet("color: gray;")
+        rec_layout.addWidget(self.lbl_name_status)
 
         # Loop mode is no longer a separate choice -- it is derived from the
         # current Mode: recording in Auto is closed-loop, recording in Freerun
@@ -386,7 +397,7 @@ class MainWindow(QMainWindow):
         setup_v.addStretch(1)   # keep setup widgets stacked at top, no dead space
         self.recording_mode_widgets = [
             self.edit_animal_id, self.edit_output_dir, self.btn_browse_output,
-            self.chk_neucams,
+            self.chk_neucams, self.btn_set_name,
         ]
 
         window_box = QGroupBox("Plot window (recent-only, not the whole session)")
@@ -639,12 +650,44 @@ class MainWindow(QMainWindow):
         if chosen:
             self.edit_output_dir.setText(chosen)
 
-    def _start_recording(self) -> None:
+    def _compute_run_name(self):
+        """(run_name, path) for the current Animal ID + output dir, or None if
+        no Animal ID is entered. Shared by 'Set name -> neucams' and Start
+        Recording so both use the identical run name."""
         animal_id = self._sanitize_animal_id(self.edit_animal_id.text())
         if not animal_id:
+            return None
+        output_dir = self.edit_output_dir.text().strip() or os.path.abspath("recordings")
+        date_str = datetime.datetime.now().strftime("%y%m%d")
+        session_num = self._next_session_number(output_dir, date_str, animal_id)
+        run_name = f"{date_str}_{animal_id}_{session_num}"
+        return run_name, os.path.join(output_dir, f"{run_name}.jsonl")
+
+    def _set_run_name_to_neucams(self) -> None:
+        """Send the run name to neucams now (folder=<name>) so its record
+        button becomes usable, without starting acquisition here."""
+        rn = self._compute_run_name()
+        if rn is None:
+            self.lbl_name_status.setText("enter an Animal ID first")
+            self.lbl_name_status.setStyleSheet("color: red;")
+            return
+        run_name, _ = rn
+        if not self.neucams.enabled:
+            self.lbl_name_status.setText(
+                f"run name '{run_name}' ready -- tick 'Trigger neucams' to send it")
+            self.lbl_name_status.setStyleSheet("color: gray;")
+            return
+        self.neucams.set_run_name(run_name)
+        self.lbl_name_status.setText(f"sent to neucams: {run_name}")
+        self.lbl_name_status.setStyleSheet("color: green; font-weight: bold;")
+
+    def _start_recording(self) -> None:
+        rn = self._compute_run_name()
+        if rn is None:
             self.lbl_recording.setText("enter an Animal ID before recording")
             self.lbl_recording.setStyleSheet("color: red; font-weight: bold;")
             return
+        run_name, path = rn
 
         # Loop mode is derived from the current Mode, not chosen separately:
         # Auto -> closed loop, Freerun -> open loop. Whatever the operator has
@@ -653,11 +696,6 @@ class MainWindow(QMainWindow):
         in_auto = self.btn_mode_auto.isChecked()
         mode = "closed_loop" if in_auto else "open_loop"
 
-        output_dir = self.edit_output_dir.text().strip() or os.path.abspath("recordings")
-        date_str = datetime.datetime.now().strftime("%y%m%d")
-        session_num = self._next_session_number(output_dir, date_str, animal_id)
-        run_name = f"{date_str}_{animal_id}_{session_num}"
-        path = os.path.join(output_dir, f"{run_name}.jsonl")
         self.handle.recording.start(path, mode, self.cfg.to_dict())
         # Tell neucams the run name and to start acquiring, so the cameras
         # capture under the same name and in sync with the temperature log.
