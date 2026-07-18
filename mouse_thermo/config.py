@@ -89,6 +89,16 @@ class Esp32Config:
 
 
 @dataclass
+class NeucamsConfig:
+    # UDP trigger to the neucams camera software. When a recording starts, send
+    # the run name + `start`; on stop send `stop`, so cameras acquire in sync
+    # with the temperature log. neucams must have udp_enable + matching port.
+    enabled: bool = False
+    host: str = "127.0.0.1"               # neucams machine; 127.0.0.1 if same PC
+    port: int = 9999                      # neucams server_port
+
+
+@dataclass
 class Config:
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     control: ControlConfig = field(default_factory=ControlConfig)
@@ -96,6 +106,7 @@ class Config:
     zigbee: ZigbeeConfig = field(default_factory=ZigbeeConfig)
     rfid: RfidConfig = field(default_factory=RfidConfig)
     esp32: Esp32Config = field(default_factory=Esp32Config)
+    neucams: NeucamsConfig = field(default_factory=NeucamsConfig)
     log_path: str = "session.jsonl"
     simulate: bool = False
 
@@ -132,6 +143,11 @@ class Config:
             if self.esp32.role not in ("ambient", "body", "log_only"):
                 raise ValueError(
                     f"esp32.role must be ambient|body|log_only, got {self.esp32.role!r}")
+        if self.neucams.enabled:
+            if not self.neucams.host:
+                raise ValueError("neucams.host required when neucams.enabled")
+            if not (0 < self.neucams.port < 65536):
+                raise ValueError(f"neucams.port out of range: {self.neucams.port}")
         if require_plug_ieee and not self.simulate and not self.zigbee.plug_ieee:
             raise ValueError("zigbee.plug_ieee required when not simulating")
 
@@ -157,6 +173,7 @@ class Config:
             zigbee=sub(ZigbeeConfig, "zigbee"),
             rfid=sub(RfidConfig, "rfid"),
             esp32=sub(Esp32Config, "esp32"),
+            neucams=sub(NeucamsConfig, "neucams"),
             log_path=raw.get("log_path", "session.jsonl"),
             simulate=raw.get("simulate", False),
         )

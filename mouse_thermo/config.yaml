@@ -47,3 +47,12 @@ esp32:
   port: /dev/ttyUSB1
   baudrate: 115200
   role: ambient
+
+neucams:
+  # UDP trigger to the neucams camera software. On Start Recording the GUI
+  # sends `folder=<date>_<animal>_<n>` then `start`; on Stop it sends `stop`,
+  # so cameras acquire in sync with the temperature log. neucams must run with
+  # udp_enable: true and a matching server_port. Same PC -> host 127.0.0.1.
+  enabled: false
+  host: 127.0.0.1
+  port: 9999

@@ -50,6 +50,7 @@ from matplotlib.figure import Figure
 
 from .config import Config
 from .main import SessionHandle, run
+from .neucams import NeucamsClient
 
 log = logging.getLogger("mouse_thermo.gui")
 
@@ -68,6 +69,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Mouse Thermo -- Live Monitor")
         self.cfg = cfg
         self.handle: Optional[SessionHandle] = None
+        # Best-effort UDP trigger to neucams; no-op unless cfg.neucams.enabled.
+        self.neucams = NeucamsClient(cfg.neucams)
 
         # Read from the GUI thread, written from the GUI thread, consulted
         # from the control loop's own thread -- threading.Event is safe for
@@ -639,8 +642,13 @@ class MainWindow(QMainWindow):
         output_dir = self.edit_output_dir.text().strip() or os.path.abspath("recordings")
         date_str = datetime.datetime.now().strftime("%y%m%d")
         session_num = self._next_session_number(output_dir, date_str, animal_id)
-        path = os.path.join(output_dir, f"{date_str}_{animal_id}_{session_num}.jsonl")
+        run_name = f"{date_str}_{animal_id}_{session_num}"
+        path = os.path.join(output_dir, f"{run_name}.jsonl")
         self.handle.recording.start(path, mode, self.cfg.to_dict())
+        # Tell neucams the run name and to start acquiring, so the cameras
+        # capture under the same name and in sync with the temperature log.
+        # Best-effort: a failed send is logged, never blocks the recording.
+        self.neucams.begin_recording(run_name)
 
         # Lock everything that defines the trial: mode toggle, ground truth,
         # lamp buttons, animal id, output dir. The mode must not change under
@@ -659,6 +667,7 @@ class MainWindow(QMainWindow):
 
     def _stop_recording(self) -> None:
         self.handle.recording.stop()
+        self.neucams.stop()   # stop camera acquisition alongside the log
         for w in self.mode_widgets + self.recording_mode_widgets:
             w.setEnabled(True)
         # Restore lamp-button enablement per the current mode (not blanket on).
