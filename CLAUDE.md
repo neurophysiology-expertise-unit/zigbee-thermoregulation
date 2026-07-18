@@ -153,16 +153,25 @@ Zigbee devices paired: SONOFF S60ZBTPF plug, SONOFF SNZB-02P ambient sensor
 COM port live in the gitignored `config.local.yaml`, not `config.yaml`.
 
 **Open work:**
-1. Plug in the hamsterpod ESP32-S2 gateway, set `esp32.port`/`enabled` in
-   `config.local.yaml`, and confirm live frames decode (adapter + tests are
-   done; only untested against the physical gateway).
+1. DONE — ESP32 ambient probe live. `config.local.yaml` has `esp32.enabled:
+   true`, `port: COM6`, `role: ambient`, `probe: t1`; verified end to end
+   (adapter -> ambient channel ~22.9C). See the ESP32 section below.
 2. Tune `ambient_setpoint_c` / `body_setpoint_c` against the real box.
 
 ## The ESP32 (hamsterpod) path
 
-`sensors/esp32_serial.py` speaks the gateway's **binary** USB-CDC format —
-290-byte frames of `MAC(6) | ts_us(4) | id[16] | t1 | t2 | ir[64]` — not
-newline text. Config: `esp32.probe` selects `t1|t2|ir_mean|ir_max`.
+`sensors/esp32_serial.py` speaks the **binary** USB-CDC format — 290-byte
+frames of `MAC(6) | ts_us(4) | id[16] | t1 | t2 | ir[64]` — not newline text.
+Config: `esp32.probe` selects `t1|t2|ir_mean|ir_max`.
+
+**This rig uses a SINGLE board, not the stock two-board design.** hamsterpod
+ships a "sensor" node that transmits over ESP-NOW and a "gateway" node that
+forwards to USB — so one board emits nothing over USB. We flashed custom
+single-board firmware (`hamsterpod/sensor_usb/sensor_usb.ino`) that reads the
+probes and writes the *identical* 290-byte frame straight to USB-CDC, so the
+adapter below is unchanged. Two ambient DS18B20 probes: **t1 = east (GPIO15),
+t2 = west (GPIO16)**; `probe: t1` drives control, t2 is logged only. Board is
+COM6 (ESP32-S2 native USB, VID_303A). No AMG8833 fitted -> IR is zero-filled.
 
 **The wire format has no sync marker or length prefix.** hamsterpod's own
 `reader_esps_influx_final.py` does `read(10)` then `read(280)` and assumes it
