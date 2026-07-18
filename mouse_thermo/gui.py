@@ -273,10 +273,14 @@ class MainWindow(QMainWindow):
 
         # Auto sub-controls: ground truth + whether to pulse heat delivery.
         gt_row = QHBoxLayout()
-        gt_row.addWidget(QLabel("Auto ground truth:"))
+        gt_row.addWidget(QLabel("Closed-loop regulates on:"))
         self.combo_ground_truth = QComboBox()
-        self.combo_ground_truth.addItem("Ambient (Zigbee)", userData="ambient")
-        self.combo_ground_truth.addItem("Body (RFID)", userData="body")
+        # Ambient is the ONLY closed-loop ground truth: the lamp's EMI blinds
+        # the body/RFID reader during heating, so body is not a trustworthy
+        # continuous regulation source on this rig. (Safety still checks the
+        # body hard-ceiling independently -- this only limits what the
+        # controller pursues, per the ground_truth invariant.)
+        self.combo_ground_truth.addItem("Ambient", userData="ambient")
         self.combo_ground_truth.currentIndexChanged.connect(self._on_ground_truth_changed)
         gt_row.addWidget(self.combo_ground_truth)
         mode_v.addLayout(gt_row)
@@ -362,6 +366,15 @@ class MainWindow(QMainWindow):
         note.setStyleSheet("color: gray;")
         rec_layout.addWidget(note)
 
+        # Trigger the neucams cameras over UDP when recording (mirrors stimpy's
+        # "Load/run Labcams" toggle). Initial state comes from config; the
+        # operator can flip it per session. When off, the temperature recording
+        # still runs -- it just doesn't start/stop the cameras.
+        self.chk_neucams = QCheckBox("Trigger neucams cameras (UDP) on record")
+        self.chk_neucams.setChecked(self.neucams.enabled)
+        self.chk_neucams.toggled.connect(self.neucams.set_enabled)
+        rec_layout.addWidget(self.chk_neucams)
+
         rec_btn_row = QHBoxLayout()
         self.btn_record = QPushButton("Start Recording")
         self.btn_record.clicked.connect(self._toggle_recording)
@@ -373,6 +386,7 @@ class MainWindow(QMainWindow):
         setup_v.addStretch(1)   # keep setup widgets stacked at top, no dead space
         self.recording_mode_widgets = [
             self.edit_animal_id, self.edit_output_dir, self.btn_browse_output,
+            self.chk_neucams,
         ]
 
         window_box = QGroupBox("Plot window (recent-only, not the whole session)")
@@ -690,6 +704,21 @@ class MainWindow(QMainWindow):
             label.setText(f"STALE ({age:.0f}s ago)")
             label.setStyleSheet("color: red; font-weight: bold;")
 
+    @staticmethod
+    def _ambient_source_label(meta: dict) -> str:
+        """Human-readable name for whichever source last fed the ambient
+        channel -- so the operator can see which ambient reading is live
+        (the ESP32 east probe updates every ~1s; the SNZB-02 only every ~30s+,
+        so the ESP32 normally dominates)."""
+        src = (meta or {}).get("src", "")
+        if src.startswith("esp32"):
+            return "ESP32 east (t1)"
+        if src.startswith("zigbee_snzb02"):
+            return "SNZB-02 (Zigbee)"
+        if src.startswith("sim"):
+            return "simulated"
+        return src or "?"
+
     # ---- polling tick -------------------------------------------------------
 
     def _tick(self) -> None:
@@ -740,7 +769,11 @@ class MainWindow(QMainWindow):
             self.lbl_body.setText("stale/unknown")
             self.lbl_body.setStyleSheet("")
 
-        self.lbl_ambient.setText(f"{amb.value:.2f}" if amb is not None else "stale/unknown")
+        if amb is not None:
+            self.lbl_ambient.setText(
+                f"{amb.value:.2f}   [{self._ambient_source_label(amb.meta)}]")
+        else:
+            self.lbl_ambient.setText("stale/unknown")
 
         if raw is None:
             self.lbl_raw_rfid.setText("no contact yet / rfid disabled")

@@ -25,13 +25,26 @@ log = logging.getLogger(__name__)
 class NeucamsClient:
     def __init__(self, cfg: NeucamsConfig):
         self.cfg = cfg
+        # Runtime on/off, toggled by the GUI checkbox. Initialised from config
+        # but independent of it, so the operator can enable the trigger at
+        # runtime even when the config default is off (and vice versa).
+        self.enabled = bool(cfg.enabled)
         self._sock: socket.socket | None = None
-        if cfg.enabled:
+        if self.enabled:
             # UDP is connectionless; the socket just holds the send buffer.
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
+    def set_enabled(self, on: bool) -> None:
+        """Enable/disable the trigger at runtime (the GUI 'Trigger neucams' box)."""
+        on = bool(on)
+        if on and self._sock is None:
+            self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.enabled = on
+        log.info("neucams trigger %s (%s:%d)", "ENABLED" if on else "disabled",
+                 self.cfg.host, self.cfg.port)
+
     def _send(self, msg: str) -> bool:
-        if not self.cfg.enabled or self._sock is None:
+        if not self.enabled or self._sock is None:
             return False
         try:
             self._sock.sendto(msg.encode("utf-8"), (self.cfg.host, self.cfg.port))

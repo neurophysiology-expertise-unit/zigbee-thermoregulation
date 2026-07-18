@@ -55,6 +55,28 @@ def test_disabled_client_sends_nothing():
     srv.close()
 
 
+def test_set_enabled_toggles_sending_at_runtime():
+    srv = _listener()
+    port = srv.getsockname()[1]
+    # Start disabled (as the config default is), then enable at runtime.
+    c = NeucamsClient(NeucamsConfig(enabled=False, host="127.0.0.1", port=port))
+    c.begin_recording("run0")            # disabled -> nothing
+    c.set_enabled(True)
+    c.begin_recording("run1")            # now sends
+    assert _recv(srv) == "folder=run1"
+    assert _recv(srv) == "start"
+    c.set_enabled(False)
+    c.stop()                             # disabled again -> nothing
+    srv.settimeout(0.2)
+    try:
+        extra = _recv(srv)
+    except socket.timeout:
+        extra = None
+    assert extra is None, f"disabled trigger should be silent, got {extra!r}"
+    c.close()
+    srv.close()
+
+
 def test_send_failure_does_not_raise():
     # Point at a closed/unreachable port; UDP send should not raise, and a
     # failed send must never propagate into the caller (the recording).
