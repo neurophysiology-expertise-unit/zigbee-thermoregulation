@@ -187,7 +187,7 @@ class MainWindow(QMainWindow):
         # ================= SETUP tab =================
         output_row = QHBoxLayout()
         output_row.addWidget(QLabel("Save recordings to:"))
-        self.edit_output_dir = QLineEdit(os.path.abspath("recordings"))
+        self.edit_output_dir = QLineEdit(os.path.abspath(self.cfg.recordings_dir))
         output_row.addWidget(self.edit_output_dir)
         self.btn_browse_output = QPushButton("Browse...")
         self.btn_browse_output.clicked.connect(self._browse_output_dir)
@@ -657,7 +657,7 @@ class MainWindow(QMainWindow):
         animal_id = self._sanitize_animal_id(self.edit_animal_id.text())
         if not animal_id:
             return None
-        output_dir = self.edit_output_dir.text().strip() or os.path.abspath("recordings")
+        output_dir = self.edit_output_dir.text().strip() or os.path.abspath(self.cfg.recordings_dir)
         date_str = datetime.datetime.now().strftime("%y%m%d")
         session_num = self._next_session_number(output_dir, date_str, animal_id)
         run_name = f"{date_str}_{animal_id}_{session_num}"
@@ -700,7 +700,15 @@ class MainWindow(QMainWindow):
         # Tell neucams the run name and to start acquiring, so the cameras
         # capture under the same name and in sync with the temperature log.
         # Best-effort: a failed send is logged, never blocks the recording.
+        sent_wall = time.time()
         self.neucams.begin_recording(run_name)
+        if self.neucams.enabled:
+            # Timestamp the exact instant we triggered neucams, so the
+            # camera-vs-thermo start delay (neucams ARM_DELAY + UDP poll +
+            # camera arm) can be reconciled against the camera frame
+            # timestamps post-hoc. Logged into the recording's own file.
+            self.handle.recording.event(
+                "neucams_start_sent", run_name=run_name, sent_wall=sent_wall)
 
         # Lock everything that defines the trial: mode toggle, ground truth,
         # lamp buttons, animal id, output dir. The mode must not change under
@@ -718,6 +726,10 @@ class MainWindow(QMainWindow):
         self.lbl_recording.setStyleSheet("")
 
     def _stop_recording(self) -> None:
+        # Log the stop instant BEFORE closing the recording file, symmetric with
+        # neucams_start_sent, so the camera stop can be reconciled too.
+        if self.neucams.enabled:
+            self.handle.recording.event("neucams_stop_sent", sent_wall=time.time())
         self.handle.recording.stop()
         self.neucams.stop()   # stop camera acquisition alongside the log
         for w in self.mode_widgets + self.recording_mode_widgets:

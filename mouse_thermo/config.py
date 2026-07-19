@@ -108,6 +108,9 @@ class Config:
     esp32: Esp32Config = field(default_factory=Esp32Config)
     neucams: NeucamsConfig = field(default_factory=NeucamsConfig)
     log_path: str = "session.jsonl"
+    # Default folder the GUI proposes for recordings (operator can still change
+    # it per session). Relative paths resolve against the CWD.
+    recordings_dir: str = "recordings"
     simulate: bool = False
 
     def validate(self, *, require_plug_ieee: bool = True) -> None:
@@ -175,6 +178,7 @@ class Config:
             esp32=sub(Esp32Config, "esp32"),
             neucams=sub(NeucamsConfig, "neucams"),
             log_path=raw.get("log_path", "session.jsonl"),
+            recordings_dir=raw.get("recordings_dir", "recordings"),
             simulate=raw.get("simulate", False),
         )
         # tuples survive YAML as lists

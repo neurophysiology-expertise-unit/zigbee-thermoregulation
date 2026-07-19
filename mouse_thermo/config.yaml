@@ -1,6 +1,7 @@
 # All thresholds live here. Nothing safety-relevant is hardcoded in the logic.
 simulate: false
 log_path: session.jsonl
+recordings_dir: recordings          # default folder the GUI proposes for recordings
 
 safety:
   ambient_max_c: 32.0            # HARD ceiling -> latched lockout

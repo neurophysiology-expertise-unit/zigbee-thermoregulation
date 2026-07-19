@@ -25,9 +25,12 @@ alignment structurally instead of assuming it (see _find_frame).
 """
 from __future__ import annotations
 
+import collections
 import logging
 import math
+import re
 import struct
+import time
 from typing import Optional, Tuple
 
 from .base import SensorSource
@@ -35,6 +38,10 @@ from ..bus import SensorChannel
 from ..config import Esp32Config
 
 log = logging.getLogger(__name__)
+
+# Sync-barcode edges the firmware emits as plain-text lines BETWEEN binary
+# frames: "EDGE <0|1> <micros>". Captured for video<->temperature alignment.
+_EDGE_RE = re.compile(rb"EDGE ([01]) (\d+)\n")
 
 MAC_LEN = 6
 TS_LEN = 4
@@ -104,6 +111,10 @@ class Esp32Source(SensorSource):
         # Latest decoded frame, pre-plausibility-gate, for GUI bring-up --
         # same purpose as RfidChipSource.last_raw_reading.
         self.last_raw_reading: Optional[Tuple[str, float, float, float]] = None
+        # Sync-barcode edges, captured as (esp_micros, state, wall_time) the
+        # instant they are parsed. Thread-safe deque: appended here (reader
+        # thread), drained by the control loop (see drain_edges).
+        self._edges: "collections.deque[Tuple[int, int, float]]" = collections.deque(maxlen=50000)
 
     # ---- framing ------------------------------------------------------------
 
@@ -169,6 +180,36 @@ class Esp32Source(SensorSource):
             return None
         return v
 
+    # ---- sync barcode -------------------------------------------------------
+
+    def _extract_edges(self) -> None:
+        """Pull any complete "EDGE <state> <micros>" lines out of the buffer and
+        record them with the wall-clock time of capture. These ride between the
+        binary frames; removing them here also keeps them from confusing the
+        frame finder. Partial (un-terminated) lines stay in the buffer until the
+        rest arrives. The firmware only emits them between whole frames, and the
+        id field is fixed ASCII with no "EDGE", so this never splits a frame."""
+        if b"EDGE " not in self._buf:
+            return
+        now = time.time()
+
+        def _take(m):
+            self._edges.append((int(m.group(2)), int(m.group(1)), now))
+            return b""
+
+        self._buf = _EDGE_RE.sub(_take, self._buf)
+
+    def drain_edges(self):
+        """Return and clear all captured barcode edges as
+        [(esp_micros, state, wall_time), ...]. Called from the control loop."""
+        out = []
+        try:
+            while True:
+                out.append(self._edges.popleft())
+        except IndexError:
+            pass
+        return out
+
     # ---- main loop ----------------------------------------------------------
 
     def read_loop(self) -> None:
@@ -181,6 +222,7 @@ class Esp32Source(SensorSource):
                 chunk = self._ser.read(4096)
                 if chunk:
                     self._buf += chunk
+                    self._extract_edges()
                 while True:
                     frame = self._find_frame()
                     if frame is None:

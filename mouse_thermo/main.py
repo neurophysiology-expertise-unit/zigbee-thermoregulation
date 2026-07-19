@@ -114,6 +114,14 @@ class RecordingBox:
         if logger is not None:
             logger.sample(**kwargs, record_mode=mode)
 
+    def event(self, kind: str, **kw) -> None:
+        """Log a one-off event into the recording file (thread-safe). Used e.g.
+        to timestamp the exact moment the neucams camera trigger was sent."""
+        with self._lock:
+            logger = self._logger
+        if logger is not None:
+            logger.event(kind, **kw)
+
 
 @dataclass
 class SessionHandle:
@@ -216,12 +224,14 @@ async def run(
             from .sensors.rfid_chip import RfidChipSource
             rfid_source = RfidChipSource(cfg.rfid, body_ch)
             sources.append(rfid_source)
+        esp32_source = None
         if cfg.esp32.enabled:
             from .sensors.esp32_serial import Esp32Source
             target = {"ambient": amb_ch, "body": body_ch}.get(cfg.esp32.role)
             if target is None:
                 raise ValueError(f"esp32.role must be ambient|body, got {cfg.esp32.role}")
-            sources.append(Esp32Source(cfg.esp32, target))
+            esp32_source = Esp32Source(cfg.esp32, target)
+            sources.append(esp32_source)
         for s in sources:
             s.start()
 
@@ -436,6 +446,17 @@ async def run(
             )
             slog.sample(**sample_kwargs)
             handle.recording.mirror(**sample_kwargs)
+
+            # Drain any LED sync-barcode edges captured since last tick and log
+            # them into the recording (each carries the ESP32 micros clock +
+            # the wall time of capture). Matched against the LED flashes in the
+            # video, this gives frame-accurate video<->temperature alignment.
+            # Logged only while recording (recording.event is a no-op otherwise).
+            if esp32_source is not None and handle.recording.active:
+                for esp_us, state, wall in esp32_source.drain_edges():
+                    handle.recording.event(
+                        "led_edge", esp_micros=esp_us, state=state, wall=wall)
+
             if decision.state is State.LOCKOUT:
                 log.warning("LOCKOUT: %s", decision.reason)
 

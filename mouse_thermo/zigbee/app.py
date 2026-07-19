@@ -77,6 +77,11 @@ class ZigbeePlug(Plug):
         self._confirmed: Optional[bool] = None
         self._commanded: Optional[bool] = None
         self._power_w: Optional[float] = None
+        # active_power is a raw register value; watts = raw * mult / div. These
+        # are static per device (ZCL default 1/1) and read once at setup. Until
+        # known, scaling is the identity and we log that the magnitude is raw.
+        self._ac_mult: Optional[int] = None
+        self._ac_div: Optional[int] = None
 
     async def bind_and_configure(self) -> None:
         onoff = self.ep.in_clusters[OnOff.cluster_id]
@@ -96,6 +101,20 @@ class ZigbeePlug(Plug):
                     ElectricalMeasurement.AttributeDefs.active_power.id,
                     min_interval=5, max_interval=60, reportable_change=1,
                 )
+                # Read the static scaling factors so power can be reported in
+                # real watts (Sonoff plugs commonly use ac_power_divisor=10, so
+                # raw is deci-watts). Missing/None -> ZCL default of 1.
+                try:
+                    rd = await em.read_attributes(
+                        ["ac_power_multiplier", "ac_power_divisor"])
+                    self._ac_mult = rd[0].get("ac_power_multiplier") or 1
+                    self._ac_div = rd[0].get("ac_power_divisor") or 1
+                    log.info("plug power scaling: mult=%s div=%s (watts = raw*mult/div)",
+                             self._ac_mult, self._ac_div)
+                except Exception:
+                    log.warning("could not read ac_power_multiplier/divisor; "
+                                "power will be reported RAW (magnitude unscaled)",
+                                exc_info=True)
                 log.info("power metering available on plug")
             else:
                 log.info("plug has no ElectricalMeasurement cluster; "
@@ -154,15 +173,32 @@ class ZigbeePlug(Plug):
                             rd[0].get(ElectricalMeasurement.AttributeDefs.active_power.id))
             if val is not None:
                 self._power_w = self._scale_power(float(val))
+                # Diagnostic: raw register value next to the on_off state, so a
+                # "high power while the lamp is off" observation can be pinned
+                # to a real draw vs a scaling/stale artifact. INFO so it shows
+                # without enabling debug logging.
+                log.info("plug poll: on_off=%s  active_power raw=%s -> %.2f W "
+                         "(mult=%s div=%s)",
+                         self._confirmed, val, self._power_w,
+                         self._ac_mult, self._ac_div)
+            else:
+                # No value returned -> we don't know the draw.
+                self._power_w = None
         except Exception as e:
+            # A failed poll must NOT leave the last value looking live -- that
+            # is exactly how a stale "high while off" reading arises. Report
+            # unknown (fail cold, consistent with the sensor bus).
+            self._power_w = None
             log.debug("plug active_power poll failed: %r", e)
 
     def _scale_power(self, raw: float) -> float:
-        """active_power is reported in units of acPowerDivisor; Sonoff plugs
-        commonly use 1 (watts) but some report deci-watts. Left as raw here
-        rather than guessed at -- see _PlugListener's note. Verify against a
-        known load before trusting the absolute magnitude."""
-        return raw
+        """Convert the raw active_power register value to watts using the
+        device's static factors: watts = raw * ac_power_multiplier /
+        ac_power_divisor. Until those are read (or if absent) the ZCL default
+        of 1/1 applies, i.e. the value is returned raw."""
+        mult = self._ac_mult if self._ac_mult else 1
+        div = self._ac_div if self._ac_div else 1
+        return raw * mult / div
 
     async def set_async(self, on: bool) -> None:
         onoff = self.ep.in_clusters[OnOff.cluster_id]
@@ -206,7 +242,7 @@ class _PlugListener:
         if cluster.cluster_id == OnOff.cluster_id and attrid == 0x0000:
             self.plug._confirmed = bool(value)
         elif cluster.cluster_id == 0x0B04 and attrid == 0x050B:  # active_power
-            self.plug._power_w = float(value)  # often deci-watts; verify per model
+            self.plug._power_w = self.plug._scale_power(float(value))
 
 
 class ZigbeeSensorListener:
