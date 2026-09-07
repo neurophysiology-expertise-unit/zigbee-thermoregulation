@@ -68,13 +68,34 @@ cd zigbee-thermoregulation
 
 ## 4. Create the virtualenv and install dependencies
 
-From the repo root:
+> **Use PowerShell (or cmd.exe) for all commands in this guide, not Git Bash.**
+> Paths use Windows backslashes — Git Bash silently mangles them — and the
+> `python` App Execution Alias (Microsoft Store redirect) is not resolved there
+> either. Open PowerShell with **Win + X → Terminal** or **Win + R → `powershell`**.
 
-```bat
-python -m venv .venv
+From the repo root in **PowerShell**:
+
+```powershell
+py -m venv .venv
 .venv\Scripts\python -m pip install --upgrade pip
 .venv\Scripts\python -m pip install -r mouse_thermo\requirements-gui.txt
 ```
+
+> **`python` vs `py`:** On a fresh Windows install, typing `python` may open the
+> Microsoft Store (Windows App Execution Alias) instead of running Python. Use
+> `py` (the Python Launcher for Windows) to create the venv. Once the venv
+> exists, **always call `.venv\Scripts\python` directly** — that always hits the
+> venv interpreter without needing to activate.
+
+> **If you want to activate the venv** (so bare `python` works in the session):
+> ```powershell
+> Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+> .venv\Scripts\Activate.ps1
+> ```
+> The `Set-ExecutionPolicy` line is needed once per terminal — PowerShell blocks
+> unsigned scripts by default; `-Scope Process` limits the change to that window.
+> **Do not use `source .venv/Scripts/activate`** — that is bash syntax and is a
+> no-op in PowerShell.
 
 `requirements-gui.txt` pulls in the core deps (`zigpy`, `bellows`, `pyserial`,
 `PyYAML`, `pytest`) **plus** the GUI (`PySide6`, `matplotlib`, `numpy`).
@@ -87,7 +108,7 @@ For a headless/service box with no GUI, use `requirements.txt` instead.
 
 Verify the install:
 
-```bat
+```powershell
 .venv\Scripts\python -c "from PySide6 import QtCore; print('Qt OK')"
 ```
 
