@@ -136,6 +136,15 @@ class Config:
     # it per session). Relative paths resolve against the CWD.
     recordings_dir: str = "recordings"
     simulate: bool = False
+    # Optional hardware-registry layer (see hardware.py). When hardware_file is
+    # set, these device ids are resolved from that registry into the
+    # zigbee/rfid/esp32 blocks at load time, so one scenario can pick which
+    # actuator/sensors it uses. Absent -> the inline device blocks are used
+    # as-is (original behaviour, fully backward compatible).
+    hardware_file: Optional[str] = None
+    actuator: Optional[str] = None          # actuator device id in the registry
+    ambient_sensor: Optional[str] = None    # sensor id feeding the ambient channel
+    body_sensor: Optional[str] = None       # sensor id feeding the body channel
 
     def validate(self, *, require_plug_ieee: bool = True) -> None:
         """Crash loudly on incoherent config rather than run unsafely."""
@@ -238,12 +247,26 @@ class Config:
             log_path=raw.get("log_path", "session.jsonl"),
             recordings_dir=raw.get("recordings_dir", "recordings"),
             simulate=raw.get("simulate", False),
+            hardware_file=raw.get("hardware_file"),
+            actuator=raw.get("actuator"),
+            ambient_sensor=raw.get("ambient_sensor"),
+            body_sensor=raw.get("body_sensor"),
         )
         # tuples survive YAML as lists
         cfg.sensors.body_valid_range = tuple(cfg.sensors.body_valid_range)
         cfg.sensors.ambient_valid_range = tuple(cfg.sensors.ambient_valid_range)
         if simulate:
             cfg.simulate = True
+        # Resolve the hardware registry (if any) into the device blocks BEFORE
+        # validate(), so a bad reference or an incoherent merged result still
+        # crashes loudly. hardware_file is relative to the scenario file.
+        if cfg.hardware_file:
+            import os
+            from .hardware import HardwareRegistry, apply
+            hw_path = cfg.hardware_file
+            if not os.path.isabs(hw_path):
+                hw_path = os.path.join(os.path.dirname(os.path.abspath(path)), hw_path)
+            apply(HardwareRegistry.load(hw_path), cfg)
         cfg.validate(require_plug_ieee=require_plug_ieee)
         return cfg
 

@@ -1,0 +1,30 @@
+# Scenario: warm to a body setpoint with the heat lamp.
+# Devices come from the hardware registry (copy hardware.example.json ->
+# hardware.local.json and fill in real addresses/ports first).
+hardware_file: ../hardware.local.json
+actuator: sonoff_plug          # the plug driving the heat lamp
+ambient_sensor: esp32_east     # wired ESP32 probe feeds the ambient channel
+# body_sensor: urh2_reader     # uncomment to regulate/log body via the RFID chip
+
+control:
+  mode: heat
+  body_setpoint_c: 36.5
+  body_deadband_c: 0.3
+  ambient_setpoint_c: 28.0
+  ambient_deadband_c: 0.5
+  loop_period_s: 5.0
+  min_on_s: 30.0
+  min_off_s: 30.0
+
+safety:
+  ambient_max_c: 32.0          # hard ceiling -> latched lockout
+  body_max_c: 38.5
+  lockout_release_hysteresis_c: 1.0
+  max_continuous_on_s: 900.0
+  watchdog_timeout_s: 30.0
+
+sensors:
+  body_valid_range: [30.0, 43.0]
+  ambient_valid_range: [5.0, 60.0]
+  body_stale_after_s: 30.0
+  ambient_stale_after_s: 300.0

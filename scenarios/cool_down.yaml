@@ -1,0 +1,30 @@
+# Scenario: cool a body setpoint with a Peltier on the same on/off plug.
+# The mirror of heat_up: hard limits are FLOORS, and the sensor valid-range low
+# ends sit BELOW the floors so a floor breach still reaches the safety layer.
+hardware_file: ../hardware.local.json
+actuator: sonoff_plug          # the plug switching the USB Peltier's supply
+ambient_sensor: esp32_east     # probe on the headbar / box feeds ambient
+# body_sensor: urh2_reader     # uncomment to regulate/log brain temp via RFID
+
+control:
+  mode: cool
+  body_setpoint_c: 32.0        # target brain temp (36 -> 32)
+  body_deadband_c: 0.3
+  ambient_setpoint_c: 20.0
+  ambient_deadband_c: 0.5
+  loop_period_s: 5.0
+  min_on_s: 30.0
+  min_off_s: 30.0
+
+safety:
+  ambient_min_c: 15.0          # hard FLOOR -> latched lockout
+  body_min_c: 30.0             # hard FLOOR (brain)
+  lockout_release_hysteresis_c: 1.0
+  max_continuous_on_s: 900.0   # stuck-ON Peltier -> runaway cold; still latches
+  watchdog_timeout_s: 30.0
+
+sensors:
+  body_valid_range: [26.0, 43.0]     # low end below body_min_c
+  ambient_valid_range: [5.0, 60.0]   # low end below ambient_min_c
+  body_stale_after_s: 30.0
+  ambient_stale_after_s: 300.0

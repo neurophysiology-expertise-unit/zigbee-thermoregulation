@@ -189,6 +189,35 @@ rather than running unsafely.
 
 ---
 
+## 7b. Scenarios + hardware registry (optional, recommended for multiple rigs)
+
+Instead of putting hardware addresses and protocol in one `config.local.yaml`,
+you can split them:
+
+- **`hardware.local.json`** (per machine, gitignored) — the devices present,
+  each with a `type` + params. Copy the template and fill it in:
+  ```bat
+  copy hardware.example.json hardware.local.json
+  ```
+  Supported `type`s: `zigbee_plug`, `esp32_hamsterpod`, `urh2_rfid`,
+  `snzb02_zigbee` (see `mouse_thermo/hardware.py`). You can list several — e.g.
+  two plugs of different brands, or two ESP32 probes — and scenarios choose
+  which to use.
+- **`scenarios/*.yaml`** — the protocol. `scenarios/heat_up.yaml` and
+  `scenarios/cool_down.yaml` ship as examples. Each sets `mode` / setpoints /
+  safety and references devices by id (`actuator`, `ambient_sensor`,
+  `body_sensor`) plus `hardware_file: ../hardware.local.json`.
+
+Launch a scenario the same way as any config:
+
+```bat
+.venv\Scripts\python -m mouse_thermo.gui --config scenarios\cool_down.yaml
+```
+
+or pick it from the **start screen** → *New session* (which opens the
+`scenarios/` folder). An unknown device `type`, a missing param, or a scenario
+referencing a device id that isn't in the registry all fail loudly at load.
+
 ## 8. Launch the live monitor
 
 Double-click **`run_gui.bat`**, or:

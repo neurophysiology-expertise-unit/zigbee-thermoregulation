@@ -1,0 +1,42 @@
+{
+  "_comment": "Per-machine hardware registry. Copy to hardware.local.json (gitignored) and fill in the real IEEE addresses / COM ports. Scenarios in scenarios/ reference these device ids. Add a new brand by giving it a supported 'type' (see mouse_thermo/hardware.py ACTUATOR_TYPES / SENSOR_TYPES).",
+
+  "coordinator": {
+    "device": "COM4",
+    "baudrate": 115200,
+    "flow_control": null,
+    "database": "zigbee.db"
+  },
+
+  "actuators": {
+    "sonoff_plug": {
+      "type": "zigbee_plug",
+      "ieee": "REPLACE-with-plug-ieee",
+      "endpoint": 1
+    },
+    "second_plug": {
+      "type": "zigbee_plug",
+      "ieee": "REPLACE-with-second-plug-ieee",
+      "endpoint": 1
+    }
+  },
+
+  "sensors": {
+    "esp32_east": {
+      "type": "esp32_hamsterpod",
+      "port": "COM6",
+      "baudrate": 115200,
+      "probe": "t1"
+    },
+    "snzb02": {
+      "type": "snzb02_zigbee",
+      "ieee": "REPLACE-with-sensor-ieee",
+      "endpoint": 1
+    },
+    "urh2_reader": {
+      "type": "urh2_rfid",
+      "port": "COM5",
+      "baudrate": 38400
+    }
+  }
+}

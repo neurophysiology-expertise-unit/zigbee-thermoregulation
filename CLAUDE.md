@@ -47,6 +47,7 @@ Sonoff SNZB-02 ───┘    (stale+range)     (veto)      (hysteresis)   (zig
 | `logger.py` | Unified JSONL, one monotonic clock |
 | `sensors/rfid_chip.py` | Adapter for the UID Devices URH-2 reader (AnyCage protocol) |
 | `sensors/esp32_serial.py` | Adapter for the hamsterpod ESP32-S2/ESP-NOW gateway (binary frames) |
+| `hardware.py` | Hardware registry + scenario resolution (device id → config blocks) |
 | `gui.py` | PySide6 live monitor + manual override + read-only Review tab, runs `main.run()` in-process |
 
 `gui.py` is not a separate tool -- only one process can hold the Zigbee
@@ -199,8 +200,8 @@ test suite is the specification.
 Working: safety supervisor, controller, bus, watchdog, logger, zigpy layer,
 pairing helper, simulation mode, RFID adapter, **heat+cool modes**, **GUI
 Review tab**, **start screen** (continue / new config / review-only),
-**review-only mode** (no hardware touched), **dockable Log panel**. 29/29
-tests pass. Heat sim loop and RFID reader verified end to
+**review-only mode** (no hardware touched), **dockable Log panel**,
+**hardware registry + scenarios**. 38/38 tests pass. Heat sim loop and RFID reader verified end to
 end against real hardware; cool mode verified in simulation only (held box ~20°C
 around setpoint; floor LOCKOUT fires) — **not yet run on the real Peltier**.
 
@@ -227,24 +228,29 @@ COM port live in the gitignored `config.local.yaml`, not `config.yaml`.
    the Peltier running before assuming pulse is needed.
 5. Consider relabelling "Lamp"/"heat" wording in `gui.py`/`main.py` to the
    mode-neutral "actuator" (cosmetic; behaviour is already mode-correct).
-6. **PROPOSED (not started) — hardware registry + scenarios.** Split config
-   into two layers so multiple device brands can be mixed and scenarios pick
-   which hardware they use:
-   - **hardware.json** (per machine): a registry of devices by id, each with a
-     `type` + connection params, e.g. actuators `{sonoff_plug: {type:
-     zigbee_plug, ieee: ...}}`, sensors `{esp32_a: {type: esp32_hamsterpod,
-     port: COM6, probe: t1}, esp32_b: {type: <other-brand>, port: COM7}}`,
-     coordinator, rfid. The `type` selects the adapter via a
-     `type -> Plug/SensorSource` factory — **this is where a new ESP32 or plug
-     BRAND plugs in: add an adapter implementing the existing interface, keyed
-     by its type**. Different-brand plug = different `Plug` impl; different-brand
-     ESP32 = different `SensorSource`/parse.
-   - **scenario** (per experiment, e.g. "heat_up", "cool_down"): `mode`,
-     setpoints, safety limits, and references to the hardware ids it uses.
-   - The start screen would list scenarios to pick from; loader merges
-     hardware + scenario into the existing `Config`. Keep `Config.validate()`
-     crash-loud. This is a real refactor (config.py + an actuator/sensor
-     factory + tests) — design it as its own change, don't bolt it on.
+6. **DONE (Phase 1) — hardware registry + scenarios.** See `hardware.py`.
+   - **hardware.local.json** (per machine, gitignored; template
+     `hardware.example.json`): a registry of devices by id, each with a `type`
+     + connection params — `coordinator`, `actuators`, `sensors`. Known types
+     live in `ACTUATOR_TYPES` / `SENSOR_TYPES` (`zigbee_plug`,
+     `esp32_hamsterpod`, `urh2_rfid`, `snzb02_zigbee`), each with required +
+     optional params. `HardwareRegistry.load()` validates and **crashes loudly**
+     on an unknown type or missing param.
+   - **scenarios/*.yaml** (per experiment, e.g. `heat_up`, `cool_down`): the
+     protocol (`mode`, setpoints, safety) plus `hardware_file` and device
+     references `actuator` / `ambient_sensor` / `body_sensor` (registry ids).
+   - `Config.load()` calls `hardware.apply()` to resolve those references into
+     the existing `zigbee` / `rfid` / `esp32` blocks BEFORE `validate()`, so
+     the control loop / main.py wiring is unchanged. Backward compatible: a
+     config with no `hardware_file` uses its inline device blocks as today.
+     The start screen's "New session" opens the `scenarios/` folder.
+     Tests: `test_hardware.py`.
+   - **Adding a new device BRAND (remaining work when needed):** add its `type`
+     to `ACTUATOR_TYPES`/`SENSOR_TYPES` + a branch in `apply`/`_apply_sensor`.
+     That covers config/selection. A brand on a genuinely different transport
+     (e.g. a WiFi plug, not Zigbee) ALSO needs a new `Plug`/`SensorSource`
+     adapter and wiring in `main.py` — Phase 1 only resolves onto the existing
+     Zigbee/ESP32/URH-2 adapters. Keep that boundary in mind.
 
 ## The ESP32 (hamsterpod) path
 

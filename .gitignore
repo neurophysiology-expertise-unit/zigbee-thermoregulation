@@ -14,6 +14,9 @@ session*.log
 
 # Local config with real IEEE addresses / ports
 config.local.yaml
+# Hardware registry with real IEEE addresses / ports (keep hardware.example.json)
+hardware.local.json
+hardware.json
 
 .vscode/
 .idea/

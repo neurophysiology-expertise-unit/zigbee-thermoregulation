@@ -1386,8 +1386,12 @@ class StartDialog(QDialog):
         self.accept()
 
     def _new(self) -> None:
+        # Default to the scenarios/ folder when present (run_gui.bat runs from
+        # the repo root), so heat_up/cool_down are one click away.
+        start_dir = "scenarios" if os.path.isdir("scenarios") else ""
         path, _ = QFileDialog.getOpenFileName(
-            self, "Choose a config", "", "Config (*.yaml *.yml);;All files (*)")
+            self, "Choose a scenario / config", start_dir,
+            "Config (*.yaml *.yml);;All files (*)")
         if path:
             self.choice = ("run", path)
             self.accept()
