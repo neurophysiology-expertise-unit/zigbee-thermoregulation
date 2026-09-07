@@ -55,10 +55,9 @@ dongle / serial ports at a time, so it drives `main.run()` in a background
 thread via `on_ready`/`SessionHandle` rather than opening its own device
 connections. `pip install -r requirements-gui.txt` (kept separate from the
 core `requirements.txt` so headless deployments don't need Qt). Note:
-PySide6 6.11.1 failed to import on Windows here with a DLL load error
-(likely a packaging issue in that specific release); 6.8.0.2 works, hence
-the `<6.11` pin -- re-check with `python -c "from PySide6 import QtCore"`
-before loosening it.
+PySide6 6.11.1 fails to import on Windows (DLL load error, likely a packaging
+issue in that release); 6.8.0.2 and 6.10.3 both work, hence the `<6.11` pin
+-- re-check with `python -c "from PySide6 import QtCore"` before loosening it.
 
 ## Invariants — do not violate without discussion
 

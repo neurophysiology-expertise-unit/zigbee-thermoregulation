@@ -101,10 +101,10 @@ py -m venv .venv
 `PyYAML`, `pytest`) **plus** the GUI (`PySide6`, `matplotlib`, `numpy`).
 For a headless/service box with no GUI, use `requirements.txt` instead.
 
-> **PySide6 pin:** 6.11.1 failed to import on Windows here (DLL load error);
-> 6.8.0.2 works, so the requirement is pinned `>=6.8,<6.11`. If `python -c
-> "from PySide6 import QtCore"` errors, that pin is why — don't loosen it
-> without re-checking.
+> **PySide6 pin:** 6.11.1 fails to import on Windows (DLL load error); 6.8.0.2
+> and 6.10.3 both work, so the requirement is pinned `>=6.8,<6.11`. If
+> `python -c "from PySide6 import QtCore"` errors after install, that pin may
+> need bumping — re-check before loosening it.
 
 Verify the install:
 
