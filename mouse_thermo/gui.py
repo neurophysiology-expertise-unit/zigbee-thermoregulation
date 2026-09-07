@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QButtonGroup,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
@@ -74,9 +75,14 @@ REVIEW_PAN_STEPS = 1000  # slider resolution: permille of the pannable span
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, review_only: bool = False):
         super().__init__()
         self.setWindowTitle("Mouse Thermo -- Live Monitor")
+        # review_only: opened purely to review recordings -- no control session
+        # is started, no device is touched. Monitor/Setup are disabled and the
+        # window lands on the Review tab. Lets recordings be opened on any PC
+        # with nothing plugged in.
+        self.review_only = review_only
         self.cfg = cfg
         self.handle: Optional[SessionHandle] = None
         # Best-effort UDP trigger to neucams; no-op unless cfg.neucams.enabled.
@@ -143,12 +149,20 @@ class MainWindow(QMainWindow):
         self._set_mode("freerun")
         self._ground_truth = self.combo_ground_truth.currentData()
 
-        self.session_thread = threading.Thread(target=self._run_session, daemon=True)
-        self.session_thread.start()
+        if self.review_only:
+            # No control session, no device access, no live timer. Just the
+            # Review tab, with the live tabs disabled so it's unmistakable.
+            self.setWindowTitle("Mouse Thermo -- Review (read-only, no hardware)")
+            self._tabs.setCurrentWidget(self._review_tab)
+            self._tabs.setTabEnabled(self._tabs.indexOf(self._monitor_tab), False)
+            self._tabs.setTabEnabled(self._tabs.indexOf(self._setup_tab), False)
+        else:
+            self.session_thread = threading.Thread(target=self._run_session, daemon=True)
+            self.session_thread.start()
 
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self._tick)
-        self.timer.start(UI_PERIOD_MS)
+            self.timer = QTimer(self)
+            self.timer.timeout.connect(self._tick)
+            self.timer.start(UI_PERIOD_MS)
 
     # ---- session plumbing --------------------------------------------------
 
@@ -203,6 +217,11 @@ class MainWindow(QMainWindow):
         tabs.addTab(monitor_tab, "Monitor")
         tabs.addTab(setup_tab, "Setup")
         tabs.addTab(review_tab, "Review")
+        # Kept so review-only mode can land on Review and disable the live tabs.
+        self._tabs = tabs
+        self._monitor_tab = monitor_tab
+        self._setup_tab = setup_tab
+        self._review_tab = review_tab
 
         # ================= SETUP tab =================
         output_row = QHBoxLayout()
@@ -1219,20 +1238,127 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
+# ---- start screen + last-config persistence ------------------------------
+
+def _settings_path() -> str:
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.path.join(base, "mouse_thermo", "gui_settings.json")
+
+
+def _load_last_config() -> Optional[str]:
+    try:
+        with open(_settings_path()) as f:
+            return json.load(f).get("last_config")
+    except Exception:
+        return None
+
+
+def _save_last_config(path: str) -> None:
+    try:
+        p = _settings_path()
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as f:
+            json.dump({"last_config": os.path.abspath(path)}, f)
+    except Exception:
+        log.warning("could not save last-config setting", exc_info=True)
+
+
+def _review_cfg(path: Optional[str]) -> Config:
+    """A Config just to seed the Review tab (its recordings_dir) -- loaded with
+    NO hardware validation, since review must work with no devices and possibly
+    no valid rig config. Falls back to plain defaults if nothing loads."""
+    candidate = path or _load_last_config()
+    if candidate and os.path.exists(candidate):
+        try:
+            return Config.load(candidate, require_plug_ieee=False)
+        except Exception:
+            log.warning("could not load %s for review; using defaults", candidate)
+    return Config()
+
+
+class StartDialog(QDialog):
+    """First screen: continue with the previous config, pick a new config, or
+    open review-only (no hardware). Shown when no --config is given."""
+
+    def __init__(self, last_config: Optional[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Mouse Thermo")
+        self.choice: Optional[tuple] = None   # ("run", path) | ("review", None)
+        self._last_config = last_config
+
+        v = QVBoxLayout(self)
+        title = QLabel("<b>Mouse Thermo</b>")
+        v.addWidget(title)
+
+        self.btn_continue = QPushButton("Continue — previous config")
+        self.btn_continue.clicked.connect(self._continue)
+        v.addWidget(self.btn_continue)
+        sub = QLabel(last_config if (last_config and os.path.exists(last_config))
+                     else "(no previous config found)")
+        sub.setStyleSheet("color: gray;")
+        sub.setWordWrap(True)
+        v.addWidget(sub)
+        if not (last_config and os.path.exists(last_config)):
+            self.btn_continue.setEnabled(False)
+
+        self.btn_new = QPushButton("New session — choose config…")
+        self.btn_new.clicked.connect(self._new)
+        v.addWidget(self.btn_new)
+
+        self.btn_review = QPushButton("Review recordings (no hardware)")
+        self.btn_review.clicked.connect(self._review)
+        v.addWidget(self.btn_review)
+
+    def _continue(self) -> None:
+        self.choice = ("run", self._last_config)
+        self.accept()
+
+    def _new(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose a config", "", "Config (*.yaml *.yml);;All files (*)")
+        if path:
+            self.choice = ("run", path)
+            self.accept()
+
+    def _review(self) -> None:
+        self.choice = ("review", None)
+        self.accept()
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--config", required=True)
+    # --config is now optional: given it, we skip the start screen and launch
+    # straight into control (keeps run_gui.bat working). Without it, the start
+    # screen lets the operator pick continue / new config / review-only.
+    p.add_argument("--config")
     p.add_argument("--simulate", action="store_true")
+    p.add_argument("--review", action="store_true",
+                    help="open review-only (no hardware), skipping the start screen")
     a = p.parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
     )
-    cfg = Config.load(a.config, simulate=a.simulate)
 
     app = QApplication(sys.argv)
-    win = MainWindow(cfg)
+
+    config_path = a.config
+    review_only = a.review
+    if not a.review and config_path is None:
+        dlg = StartDialog(_load_last_config())
+        if not dlg.exec() or dlg.choice is None:
+            return 0
+        kind, config_path = dlg.choice
+        review_only = (kind == "review")
+
+    if review_only:
+        cfg = _review_cfg(config_path)
+    else:
+        cfg = Config.load(config_path, simulate=a.simulate)
+        _save_last_config(config_path)
+
+    win = MainWindow(cfg, review_only=review_only)
     win.resize(720, 640)
     win.show()
     return app.exec()
