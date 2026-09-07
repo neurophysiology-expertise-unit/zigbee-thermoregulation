@@ -168,7 +168,7 @@ async def run(
                            cfg.sensors.ambient_valid_range)
 
     slog = SessionLogger(cfg.log_path, cfg.to_dict())
-    safety = SafetySupervisor(cfg.safety)
+    safety = SafetySupervisor(cfg.safety, mode=cfg.control.mode)
     ctrl = Controller(cfg.control, safety, cfg.safety)
 
     sources = []
@@ -181,8 +181,9 @@ async def run(
         # ---- actuator + zigbee sensor ------------------------------------
         if cfg.simulate:
             from .actuators.dummy_plug import DummyPlug
-            plug = DummyPlug()
-            log.warning("SIMULATION MODE -- no hardware is being driven")
+            plug = DummyPlug(mode=cfg.control.mode)
+            log.warning("SIMULATION MODE (%s) -- no hardware is being driven",
+                        cfg.control.mode)
         else:
             from .zigbee.app import start_app, ZigbeePlug, ZigbeeSensorListener
             app = await start_app(cfg.zigbee)

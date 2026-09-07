@@ -59,6 +59,24 @@ class Controller:
             self._last_change = now
         return self._cmd
 
+    def _regulate(self, value: float, setpoint: float, deadband: float,
+                  label: str) -> tuple[bool, str]:
+        """Hysteresis toward `setpoint`, direction set by mode.
+          heat: actuator ON when value < sp-db, OFF when value > sp+db
+          cool: actuator ON when value > sp+db, OFF when value < sp-db  (mirror)
+        In-deadband holds the current command. Returns (want_on, reason)."""
+        if self.cfg.mode == "cool":
+            if value > setpoint + deadband:
+                return True, f"{label} {value:.2f}C > sp+db"
+            if value < setpoint - deadband:
+                return False, f"{label} {value:.2f}C < sp-db"
+        else:
+            if value < setpoint - deadband:
+                return True, f"{label} {value:.2f}C < sp-db"
+            if value > setpoint + deadband:
+                return False, f"{label} {value:.2f}C > sp+db"
+        return self._cmd, f"{label} {value:.2f}C in deadband, hold"
+
     def step(
         self,
         body: Optional[Reading],
@@ -116,28 +134,35 @@ class Controller:
         else:  # "auto"
             reg_body = body
 
-        # --- Ambient ceiling as a soft regulator, always active -------------
-        # Even in NORMAL we refuse to heat if ambient is at/above its setpoint.
-        ambient_blocks = (
-            ambient is not None
-            and ambient.value >= c.ambient_setpoint_c + c.ambient_deadband_c
-        )
+        # --- Ambient guard as a soft regulator, always active ---------------
+        # heat: refuse to add heat if ambient is at/above its setpoint
+        #       ("a cold mouse does not license an overheated box").
+        # cool: mirror -- refuse to remove more heat if ambient is at/below its
+        #       setpoint ("a warm mouse does not license an over-cooled box").
+        if c.mode == "cool":
+            ambient_blocks = (
+                ambient is not None
+                and ambient.value <= c.ambient_setpoint_c - c.ambient_deadband_c
+            )
+            ambient_edge = f"floor {c.ambient_setpoint_c}C (-{c.ambient_deadband_c})"
+        else:
+            ambient_blocks = (
+                ambient is not None
+                and ambient.value >= c.ambient_setpoint_c + c.ambient_deadband_c
+            )
+            ambient_edge = f"cap {c.ambient_setpoint_c}C (+{c.ambient_deadband_c})"
 
         if reg_body is not None:
             body = reg_body
             state = State.NORMAL
             if ambient_blocks:
                 want, why = False, (
-                    f"ambient {ambient.value:.2f}C at cap "
-                    f"{c.ambient_setpoint_c}C (+{c.ambient_deadband_c}) "
+                    f"ambient {ambient.value:.2f}C at {ambient_edge} "
                     f"-- body {body.value:.2f}C not pursued"
                 )
-            elif body.value < c.body_setpoint_c - c.body_deadband_c:
-                want, why = True, f"body {body.value:.2f}C < sp-db"
-            elif body.value > c.body_setpoint_c + c.body_deadband_c:
-                want, why = False, f"body {body.value:.2f}C > sp+db"
             else:
-                want, why = self._cmd, f"body {body.value:.2f}C in deadband, hold"
+                want, why = self._regulate(
+                    body.value, c.body_setpoint_c, c.body_deadband_c, "body")
         else:
             # No body temp: the chip was not read (animal away from antenna,
             # implant not reporting, RFID disabled). Regulate ambient only.
@@ -148,12 +173,9 @@ class Controller:
                     "controller reached FALLBACK with no ambient reading; "
                     "safety supervisor should have vetoed. Refusing to guess."
                 )
-            if ambient.value < c.ambient_setpoint_c - c.ambient_deadband_c:
-                want, why = True, f"fallback: ambient {ambient.value:.2f}C < sp-db"
-            elif ambient.value > c.ambient_setpoint_c + c.ambient_deadband_c:
-                want, why = False, f"fallback: ambient {ambient.value:.2f}C > sp+db"
-            else:
-                want, why = self._cmd, f"fallback: ambient in deadband, hold"
+            want, why = self._regulate(
+                ambient.value, c.ambient_setpoint_c, c.ambient_deadband_c,
+                "fallback: ambient")
 
         on = self._apply(want, now)
         if on != want:

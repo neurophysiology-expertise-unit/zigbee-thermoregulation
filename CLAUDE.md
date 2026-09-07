@@ -47,7 +47,7 @@ Sonoff SNZB-02 ───┘    (stale+range)     (veto)      (hysteresis)   (zig
 | `logger.py` | Unified JSONL, one monotonic clock |
 | `sensors/rfid_chip.py` | Adapter for the UID Devices URH-2 reader (AnyCage protocol) |
 | `sensors/esp32_serial.py` | Adapter for the hamsterpod ESP32-S2/ESP-NOW gateway (binary frames) |
-| `gui.py` | PySide6 live monitor + manual override, runs `main.run()` in-process |
+| `gui.py` | PySide6 live monitor + manual override + read-only Review tab, runs `main.run()` in-process |
 
 `gui.py` is not a separate tool -- only one process can hold the Zigbee
 dongle / serial ports at a time, so it drives `main.run()` in a background
@@ -123,6 +123,58 @@ The loop shortens its wait to wake on pulse edges rather than aliasing against
 `loop_period_s`. Engaging pulse has up to `loop_period_s` latency, and rapid
 relay cycling wears the plug's mechanical relay.
 
+## Cool mode (Peltier) — the mirror of heat mode
+
+`control.mode` (config) is `heat` (default) or `cool`. Heat mode is the original
+heat-lamp behaviour, untouched. Cool mode drives a **Peltier switched by the
+same on/off Sonoff plug** (on this rig: a USB Peltier through a USB hub, so the
+plug's ON also runs the Peltier's hot-side fan) to pull temperature DOWN — the
+current experiment cools an animal's **brain from 36→32 °C** via the headbar
+holder (conductive). It is **cooling-only, not true bidirectional**: one on/off
+actuator, no polarity reversal (a plug can't reverse DC; true bidirectional
+would need an H-bridge/TEC controller behind a new `Plug` adapter).
+
+Cool mode is the exact mirror of heat mode — every comparison direction flips on
+`mode`:
+
+| | heat | cool |
+|---|---|---|
+| actuator ON → | temp up | temp down |
+| hard limit | ceiling (`*_max_c`) | **floor** (`*_min_c`) |
+| controller ON when | value < sp−db | value > sp+db |
+| latch releases on | cooling evidence | **warming** evidence |
+| fail-safe OFF drifts to | room (cooler) | room (**warmer**) ✅ |
+
+Because OFF drifts to survivable room temp in BOTH modes, the whole fail-cold
+skeleton (invariants 1–8) is unchanged and cool mode adds **no** new "safety
+turns something on" path — invariant 4 holds. The one hazard that inverts is a
+**stuck-ON actuator** (runaway cold instead of hot); `max_continuous_on_s` +
+the hardware cutoff (now a **low-temp** cutoff, see below) guard it.
+
+Config rules (enforced by `Config.validate()`, which crashes loudly):
+`body_setpoint_c` must be **above** `body_min_c`; the sensor `*_valid_range` LOW
+end must be **below** the floor so a floor breach still reaches the supervisor
+(mirror of the hyperthermia protocol raising the range's HIGH end). `mode` is
+wired to `SafetySupervisor(mode=)` and read by `Controller` from
+`cfg.control.mode`; both come from the one `control.mode`, so they can't
+disagree. `test_safety.py` has a full mirror cool suite (`mk_cool`, `test_cool_*`).
+
+The **hardware cutoff** requirement inverts too: heat mode wants a bimetallic
+thermostat a few °C ABOVE `ambient_max_c`; cool mode wants a **low-temperature
+cutoff** that kills the Peltier supply below a floor. Still a hardware
+requirement, not a software one.
+
+## Review tab (gui.py) — read-only recording playback
+
+A third GUI tab, independent of the live loop (pure file read). **Load
+recording…** parses a session/recording `.jsonl` into the whole time series
+(not the live sweep window); the operator scrubs a cursor across it to read
+body/ambient/actuator/state at any instant, with control-quality stats
+(mean/SD/range, % time within deadband of setpoint, actuator duty, LOCKOUT
+count). A **Window** combo (4 s … All) zooms and a **Pan** slider scrolls the
+zoom window across the recording. Parser (`_parse_recording`) is tolerant of a
+truncated final line (interrupted session) and missing keys (older files).
+
 ## Before any change to safety.py / controller.py / bus.py
 
 Run these from the repo root (the parent of `mouse_thermo/`) — `main.py` uses
@@ -145,8 +197,13 @@ test suite is the specification.
 ## Current state
 
 Working: safety supervisor, controller, bus, watchdog, logger, zigpy layer,
-pairing helper, simulation mode, RFID adapter. 11/11 tests pass. Sim loop and
-RFID reader verified end to end against real hardware.
+pairing helper, simulation mode, RFID adapter, **heat+cool modes**, **GUI
+Review tab**. 29/29 tests pass. Heat sim loop and RFID reader verified end to
+end against real hardware; cool mode verified in simulation only (held box ~20°C
+around setpoint; floor LOCKOUT fires) — **not yet run on the real Peltier**.
+
+Windows bring-up (drivers, COM ports, re-pairing) is documented in
+`INSTALL_WINDOWS.md`.
 
 Zigbee devices paired: SONOFF S60ZBTPF plug, SONOFF SNZB-02P ambient sensor
 (a spare SNZB-02D is also paired but unused). IEEE addresses and the reader's
@@ -157,6 +214,17 @@ COM port live in the gitignored `config.local.yaml`, not `config.yaml`.
    true`, `port: COM6`, `role: ambient`, `probe: t1`; verified end to end
    (adapter -> ambient channel ~22.9C). See the ESP32 section below.
 2. Tune `ambient_setpoint_c` / `body_setpoint_c` against the real box.
+3. **Cooling rig on a 2nd Windows PC.** New brain 36→32 °C protocol with a USB
+   Peltier on the headbar (see "Cool mode" above). To do on the new machine:
+   install per `INSTALL_WINDOWS.md`, re-pair the Zigbee devices, write a
+   `config.local.yaml` with `control.mode: cool` + floors + a valid range whose
+   low end sits below the floor, then dry-run cool mode before an animal.
+4. **Re-test RFID EMI with the Peltier.** The pulse/"chopped lamp" feature was
+   specific to the heat lamp's EMI blinding the reader; a DC Peltier may not,
+   in which case pulse is unnecessary for cooling. Check `raw_rfid_age_s` with
+   the Peltier running before assuming pulse is needed.
+5. Consider relabelling "Lamp"/"heat" wording in `gui.py`/`main.py` to the
+   mode-neutral "actuator" (cosmetic; behaviour is already mode-correct).
 
 ## The ESP32 (hamsterpod) path
 

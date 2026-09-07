@@ -10,10 +10,21 @@ import yaml
 
 @dataclass
 class SafetyConfig:
-    # Hard ceilings. Crossing these latches a lockout.
+    # Hard ceilings (mode: heat). Crossing these latches a lockout.
     ambient_max_c: float = 32.0
     body_max_c: float = 38.5
-    # Lockout releases only when temp drops this far below the ceiling.
+    # Hard FLOORS (mode: cool). The mirror image of the ceilings: with a
+    # Peltier/cooler the hazard is hypothermia, so a temperature AT/BELOW these
+    # latches a lockout. Unused in heat mode. For a floor breach to actually
+    # reach this supervisor, the plausibility gate must accept sub-floor values
+    # -- so sensors.*_valid_range's LOW end must sit below the floor (validate()
+    # enforces this), exactly mirroring how the hyperthermia protocol raises the
+    # HIGH end above the ceiling.
+    ambient_min_c: float = 15.0
+    body_min_c: float = 30.0
+    # Lockout releases only when temp recovers this far past the limit:
+    # in heat mode below (ceiling - hysteresis); in cool mode above
+    # (floor + hysteresis). Positive evidence of returning to safety.
     lockout_release_hysteresis_c: float = 1.0
     # If BOTH temperature sources are unusable for this long -> lamp off.
     all_sensors_stale_s: float = 60.0
@@ -26,8 +37,21 @@ class SafetyConfig:
 
 @dataclass
 class ControlConfig:
+    # "heat" -- actuator ON adds heat (heat lamp): regulate UP to setpoint,
+    #           hard limits are ceilings, fail-safe OFF drifts DOWN to room.
+    # "cool" -- actuator ON removes heat (Peltier): regulate DOWN to setpoint,
+    #           hard limits are floors, fail-safe OFF drifts UP to room.
+    # The two are exact mirrors; every comparison direction flips on this flag.
+    # OFF is the safe state in BOTH modes because the box passively returns
+    # toward (survivable) room temperature -- so the whole fail-cold skeleton
+    # (OFF at startup/exception/exit, watchdog forces OFF, safety only vetoes)
+    # is unchanged. The residual hazard is a STUCK-ON actuator (runaway hot in
+    # heat mode, runaway cold in cool mode); that is what max_continuous_on_s
+    # and the hardware cutoff guard against.
+    mode: str = "heat"
     body_setpoint_c: float = 36.5
-    body_deadband_c: float = 0.3          # on below sp-db, off above sp+db
+    body_deadband_c: float = 0.3          # heat: on below sp-db, off above sp+db
+                                          # cool: on above sp+db, off below sp-db
     ambient_setpoint_c: float = 28.0      # used in FALLBACK mode only
     ambient_deadband_c: float = 0.5
     loop_period_s: float = 5.0
@@ -117,16 +141,50 @@ class Config:
         """Crash loudly on incoherent config rather than run unsafely."""
         c, s, sen = self.control, self.safety, self.sensors
 
-        if c.body_setpoint_c >= s.body_max_c:
-            raise ValueError(
-                f"body_setpoint_c ({c.body_setpoint_c}) must be below "
-                f"body_max_c ({s.body_max_c})"
-            )
-        if c.ambient_setpoint_c >= s.ambient_max_c:
-            raise ValueError(
-                f"ambient_setpoint_c ({c.ambient_setpoint_c}) must be below "
-                f"ambient_max_c ({s.ambient_max_c})"
-            )
+        if c.mode not in ("heat", "cool"):
+            raise ValueError(f"control.mode must be 'heat' or 'cool', got {c.mode!r}")
+
+        if c.mode == "cool":
+            # Mirror of the heat-mode checks below: in cool mode the binding
+            # hard limits are the FLOORS, and the setpoint sits above them.
+            if c.body_setpoint_c <= s.body_min_c:
+                raise ValueError(
+                    f"cool mode: body_setpoint_c ({c.body_setpoint_c}) must be "
+                    f"above body_min_c ({s.body_min_c})"
+                )
+            if c.ambient_setpoint_c <= s.ambient_min_c:
+                raise ValueError(
+                    f"cool mode: ambient_setpoint_c ({c.ambient_setpoint_c}) must "
+                    f"be above ambient_min_c ({s.ambient_min_c})"
+                )
+            # A floor breach can only trigger a lockout if a sub-floor reading
+            # survives the plausibility gate -- so the valid range must extend
+            # BELOW the floor. Mirror of the hyperthermia protocol raising the
+            # range's HIGH end above the ceiling (see CLAUDE.md).
+            if not (sen.body_valid_range[0] < s.body_min_c):
+                raise ValueError(
+                    f"cool mode: body_valid_range low end "
+                    f"({sen.body_valid_range[0]}) must be below body_min_c "
+                    f"({s.body_min_c}) so a floor breach is not discarded as "
+                    f"implausible before safety can see it"
+                )
+            if not (sen.ambient_valid_range[0] < s.ambient_min_c):
+                raise ValueError(
+                    f"cool mode: ambient_valid_range low end "
+                    f"({sen.ambient_valid_range[0]}) must be below ambient_min_c "
+                    f"({s.ambient_min_c})"
+                )
+        else:  # heat
+            if c.body_setpoint_c >= s.body_max_c:
+                raise ValueError(
+                    f"body_setpoint_c ({c.body_setpoint_c}) must be below "
+                    f"body_max_c ({s.body_max_c})"
+                )
+            if c.ambient_setpoint_c >= s.ambient_max_c:
+                raise ValueError(
+                    f"ambient_setpoint_c ({c.ambient_setpoint_c}) must be below "
+                    f"ambient_max_c ({s.ambient_max_c})"
+                )
         if not (sen.body_valid_range[0] < sen.body_valid_range[1]):
             raise ValueError("body_valid_range malformed")
         if not (sen.ambient_valid_range[0] < sen.ambient_valid_range[1]):

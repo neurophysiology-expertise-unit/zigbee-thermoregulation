@@ -19,6 +19,11 @@ Sonoff SNZB-02 ───┘    (stale+range)     (veto)      (hysteresis)   (zig
 pip install -r mouse_thermo/requirements.txt
 ```
 
+**On Windows** (drivers, COM ports, re-pairing when you move the rig), follow
+[INSTALL_WINDOWS.md](INSTALL_WINDOWS.md) instead — it covers the SONOFF
+ZBDongle-E / plug / SNZB-02, the URH-2 RFID reader, the ESP32 probe, and the
+related neu-suite repos.
+
 Run all commands below from the repo root (the parent of `mouse_thermo/`) —
 the package uses relative imports, so entry points must be invoked as
 `-m mouse_thermo.<module>`, not run directly from inside the package directory.

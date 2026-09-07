@@ -159,6 +159,124 @@ def test_config_rejects_setpoint_above_hard_max():
         cfg.validate()
 
 
+# ---- cool mode (Peltier): the exact mirror image of heat mode ------------
+# Hard limits are FLOORS, regulation drives DOWN to setpoint, and the latch
+# releases only on evidence of WARMING. Fail-safe is still OFF (drift up to
+# room temp). These pin the mirror the same way the heat tests pin the original.
+
+def mk_cool(**kw):
+    kw.setdefault("body_min_c", 30.0)
+    kw.setdefault("ambient_min_c", 15.0)
+    kw.setdefault("lockout_release_hysteresis_c", 1.0)
+    s = SafetyConfig(**kw)
+    c = ControlConfig(mode="cool", body_setpoint_c=32.0,
+                      ambient_setpoint_c=20.0, min_on_s=0, min_off_s=0)
+    sup = SafetySupervisor(s, mode="cool")
+    return sup, Controller(c, sup, s)
+
+
+def test_cool_body_hard_min_latches():
+    sup, ctrl = mk_cool()
+    d = ctrl.step(R(29.5), R(20.0))   # body below the 30C floor
+    assert d.lamp_on is False and sup.latched
+    assert d.latched is True, "a real hard-floor breach must never be overridable"
+
+
+def test_cool_ambient_hard_min_latches_release_requires_warming():
+    sup, ctrl = mk_cool()
+    d = ctrl.step(R(32.0), R(14.5))   # ambient below the 15C floor
+    assert d.lamp_on is False and d.state is State.LOCKOUT and d.latched is True
+    # warmed a little, but not past the hysteresis -> still locked
+    d = ctrl.step(R(32.0), R(15.5))
+    assert d.state is State.LOCKOUT
+    # properly warm (ambient > floor+hyst, body > floor+hyst) -> releases
+    d = ctrl.step(R(32.0), R(17.0))
+    assert d.state is not State.LOCKOUT
+
+
+def test_cool_cools_when_warm_off_when_cold():
+    sup, ctrl = mk_cool()
+    d = ctrl.step(R(35.0), R(20.0))   # body above sp+db -> cool ON
+    assert d.lamp_on is True and d.state is State.NORMAL
+    d = ctrl.step(R(31.0), R(20.0))   # body below sp-db -> cool OFF (cold enough)
+    assert d.lamp_on is False and d.state is State.NORMAL
+
+
+def test_cool_ambient_floor_overrides_warm_body():
+    """Mirror of test_ambient_cap_overrides_cold_body: a warm mouse does NOT
+    license an over-cooled box."""
+    sup, ctrl = mk_cool()
+    d = ctrl.step(R(35.0), R(19.0))   # body warm, ambient at its floor
+    assert d.lamp_on is False
+    assert "ambient" in d.reason
+
+
+def test_cool_no_body_falls_back_to_ambient():
+    sup, ctrl = mk_cool()
+    d = ctrl.step(None, R(25.0))      # warm box, no chip -> cool ON
+    assert d.lamp_on is True and d.state is State.FALLBACK
+    d = ctrl.step(None, R(18.0))      # box below setpoint -> cool OFF
+    assert d.lamp_on is False and d.state is State.FALLBACK
+
+
+def test_cool_stuck_on_latch_is_sticky():
+    sup, ctrl = mk_cool(max_continuous_on_s=10.0)
+    t0 = time.monotonic()
+    ctrl.step(R(35.0), R(20.0), now=t0)           # cooler turns on
+    d = ctrl.step(R(35.0), R(20.0), now=t0 + 20)  # 20s continuously on
+    assert d.lamp_on is False and sup.latched
+    assert d.latched is True, "stuck-on must never be overridable"
+    d = ctrl.step(R(35.0), R(20.0), now=t0 + 30)  # temps fine, sticky stays
+    assert d.lamp_on is False and d.state is State.LOCKOUT
+    sup.reset_latch()
+    d = ctrl.step(R(35.0), R(20.0), now=t0 + 40)
+    assert d.state is State.NORMAL
+
+
+def test_cool_dwell_never_blocks_a_safety_off():
+    s = SafetyConfig(body_min_c=30.0, ambient_min_c=15.0)
+    c = ControlConfig(mode="cool", body_setpoint_c=32.0, ambient_setpoint_c=20.0,
+                      min_on_s=600.0, min_off_s=600.0)   # absurd dwell
+    sup = SafetySupervisor(s, mode="cool")
+    ctrl = Controller(c, sup, s)
+    t0 = time.monotonic()
+    d = ctrl.step(R(35.0), R(20.0), now=t0)
+    assert d.lamp_on is True
+    d = ctrl.step(R(29.0), R(20.0), now=t0 + 1)   # body crashes below floor
+    assert d.lamp_on is False, "min_on_s must never delay a safety shutoff"
+
+
+def test_cool_config_rejects_setpoint_below_floor():
+    cfg = Config(simulate=True)
+    cfg.control.mode = "cool"
+    cfg.control.body_setpoint_c = 29.0
+    cfg.safety.body_min_c = 30.0
+    with pytest.raises(ValueError, match="body_setpoint_c"):
+        cfg.validate()
+
+
+def test_cool_config_requires_valid_range_below_floor():
+    cfg = Config(simulate=True)
+    cfg.control.mode = "cool"
+    cfg.control.body_setpoint_c = 32.0
+    cfg.safety.body_min_c = 30.0
+    cfg.sensors.body_valid_range = (30.0, 43.0)   # low end NOT below the floor
+    with pytest.raises(ValueError, match="valid_range"):
+        cfg.validate()
+
+
+def test_cool_config_valid_passes():
+    cfg = Config(simulate=True)
+    cfg.control.mode = "cool"
+    cfg.control.body_setpoint_c = 32.0
+    cfg.control.ambient_setpoint_c = 20.0
+    cfg.safety.body_min_c = 30.0
+    cfg.safety.ambient_min_c = 15.0
+    cfg.sensors.body_valid_range = (26.0, 43.0)
+    cfg.sensors.ambient_valid_range = (5.0, 60.0)
+    cfg.validate()   # must not raise
+
+
 class NeverConfirmingPlug(Plug):
     """A plug whose relay works but which NEVER sends an attribute report --
     exactly the real Sonoff behaviour that left a lamp physically ON while

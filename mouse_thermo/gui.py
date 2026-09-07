@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import bisect
 import datetime
+import json
 import logging
 import os
 import re
@@ -40,6 +42,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QPushButton,
+    QSlider,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -61,6 +64,13 @@ SWEEP_RESOLUTION = 200  # samples across one full sweep, independent of poll rat
 SWEEP_ERASE_FRACTION = 0.05  # fraction of the sweep width blanked just ahead of the cursor
 PLOT_Y_MIN, PLOT_Y_MAX = 20.0, 50.0  # fixed temp axis -- not autoscaled to the data
 LAMP_ON_BAND = (1.0, 0.0, 0.0, 0.18)  # red band under the trace where lamp was ON
+
+# Review tab: selectable zoom widths. None = the whole recording. The pan
+# slider below the plot only does anything when a fixed width narrower than the
+# recording is chosen.
+REVIEW_WINDOW_OPTIONS = (("4 s", 4.0), ("10 s", 10.0), ("30 s", 30.0),
+                         ("60 s", 60.0), ("2 min", 120.0), ("All", None))
+REVIEW_PAN_STEPS = 1000  # slider resolution: permille of the pannable span
 
 
 class MainWindow(QMainWindow):
@@ -118,6 +128,13 @@ class MainWindow(QMainWindow):
         self._sweep_xs = [i / SWEEP_RESOLUTION * DEFAULT_PLOT_WINDOW_S for i in range(SWEEP_RESOLUTION)]
         self._last_sweep_idx: Optional[int] = None
         self._lamp_fill = None   # matplotlib collection for the red bands
+
+        # Parsed contents of a recording loaded into the read-only Review tab.
+        # None until the operator loads a file; entirely independent of the
+        # live control session (a pure file read, safe to use in any mode).
+        self._review: Optional[dict] = None
+        self._review_cursor = None
+        self._review_window: Optional[float] = None  # zoom width; None = whole file
 
         self._build_ui()
         # Apply the default mode (Freerun, lamp off) and default ground truth
@@ -181,8 +198,11 @@ class MainWindow(QMainWindow):
         monitor_v = QVBoxLayout(monitor_tab)
         setup_tab = QWidget()
         setup_v = QVBoxLayout(setup_tab)
+        review_tab = QWidget()
+        review_v = QVBoxLayout(review_tab)
         tabs.addTab(monitor_tab, "Monitor")
         tabs.addTab(setup_tab, "Setup")
+        tabs.addTab(review_tab, "Review")
 
         # ================= SETUP tab =================
         output_row = QHBoxLayout()
@@ -445,6 +465,273 @@ class MainWindow(QMainWindow):
         self.ax.legend(lines, [ln.get_label() for ln in lines], loc="upper right")
         self.canvas = FigureCanvas(self.fig)
         monitor_v.addWidget(self.canvas, 1)   # plot takes all remaining space
+
+        self._build_review_tab(review_v)
+
+    # ---- review tab (read-only, post-recording) ------------------------------
+
+    def _build_review_tab(self, layout: QVBoxLayout) -> None:
+        """A self-contained viewer for a finished recording: load a .jsonl,
+        see the WHOLE session (not the live sweep window), scrub the cursor
+        across it to read values at any instant, and read control-quality
+        stats. Touches no hardware and no live session -- purely a file read."""
+        top = QHBoxLayout()
+        self.btn_review_load = QPushButton("Load recording…")
+        self.btn_review_load.clicked.connect(self._load_review)
+        top.addWidget(self.btn_review_load)
+        self.lbl_review_file = QLabel("no recording loaded")
+        self.lbl_review_file.setStyleSheet("color: gray;")
+        top.addWidget(self.lbl_review_file, 1)
+        top.addWidget(QLabel("Window:"))
+        self.combo_review_window = QComboBox()
+        for label, secs in REVIEW_WINDOW_OPTIONS:
+            self.combo_review_window.addItem(label, userData=secs)
+        self.combo_review_window.setCurrentIndex(len(REVIEW_WINDOW_OPTIONS) - 1)  # "All"
+        self.combo_review_window.currentIndexChanged.connect(self._on_review_window_changed)
+        top.addWidget(self.combo_review_window)
+        layout.addLayout(top)
+
+        # Control-quality summary (mean/SD, time-in-band, actuator duty).
+        self.lbl_review_stats = QLabel("Load a recording to see how well it held setpoint.")
+        self.lbl_review_stats.setWordWrap(True)
+        self.lbl_review_stats.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.lbl_review_stats)
+
+        # Live readout of the values under the scrub cursor.
+        self.lbl_review_readout = QLabel("move the mouse over the plot to read values")
+        self.lbl_review_readout.setStyleSheet("font-family: monospace;")
+        layout.addWidget(self.lbl_review_readout)
+
+        self.review_fig = Figure(figsize=(6, 3))
+        self.review_ax = self.review_fig.add_subplot(111)
+        self.review_ax.set_xlabel("time (s)")
+        self.review_ax.set_ylabel("temp (°C)")
+        self.review_ax.text(0.5, 0.5, "no recording loaded",
+                            transform=self.review_ax.transAxes,
+                            ha="center", va="center", color="0.6")
+        self.review_canvas = FigureCanvas(self.review_fig)
+        self.review_canvas.mpl_connect("motion_notify_event", self._on_review_hover)
+        layout.addWidget(self.review_canvas, 1)
+
+        # Pan slider: scrolls the zoom window across the recording. Disabled
+        # while the window is "All" (nothing to pan). 0..REVIEW_PAN_STEPS maps
+        # linearly onto the pannable span, so it works at any recording length.
+        pan_row = QHBoxLayout()
+        pan_row.addWidget(QLabel("Pan:"))
+        self.slider_review = QSlider(Qt.Horizontal)
+        self.slider_review.setRange(0, REVIEW_PAN_STEPS)
+        self.slider_review.setValue(0)
+        self.slider_review.setEnabled(False)
+        self.slider_review.valueChanged.connect(self._on_review_pan)
+        pan_row.addWidget(self.slider_review, 1)
+        layout.addLayout(pan_row)
+
+    def _load_review(self) -> None:
+        start_dir = self.edit_output_dir.text().strip() or os.path.abspath(self.cfg.recordings_dir)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open a recording to review", start_dir, "Recordings (*.jsonl);;All files (*)")
+        if not path:
+            return
+        try:
+            rec = self._parse_recording(path)
+        except Exception as e:  # a corrupt/partial file must not crash the GUI
+            log.exception("failed to parse recording %s", path)
+            self.lbl_review_file.setText(f"failed to load: {e}")
+            self.lbl_review_file.setStyleSheet("color: red; font-weight: bold;")
+            return
+        if not rec["t"]:
+            self.lbl_review_file.setText(f"{os.path.basename(path)} -- no samples found")
+            self.lbl_review_file.setStyleSheet("color: red;")
+            return
+        self._review = rec
+        self.lbl_review_file.setText(
+            f"{os.path.basename(path)}  ({len(rec['t'])} samples, "
+            f"{rec['t'][-1] - rec['t'][0]:.0f}s)")
+        self.lbl_review_file.setStyleSheet("")
+        self.lbl_review_stats.setText(self._control_stats(rec))
+        # Fresh file: reset the zoom to the whole recording.
+        self.combo_review_window.blockSignals(True)
+        self.combo_review_window.setCurrentIndex(len(REVIEW_WINDOW_OPTIONS) - 1)  # "All"
+        self.combo_review_window.blockSignals(False)
+        self._review_window = None
+        self.slider_review.blockSignals(True)
+        self.slider_review.setValue(0)
+        self.slider_review.blockSignals(False)
+        self.slider_review.setEnabled(False)
+        self._render_review()
+
+    @staticmethod
+    def _parse_recording(path: str) -> dict:
+        """Read a session/recording .jsonl into column arrays. Tolerant of
+        missing keys (older files) and of a truncated last line (a session
+        killed mid-write) -- those are skipped, never fatal."""
+        config: dict = {}
+        t_mono, body, ambient, lamp, power = [], [], [], [], []
+        state, reason, body_sp, amb_sp = [], [], [], []
+
+        def num(x):
+            return float(x) if isinstance(x, (int, float)) else float("nan")
+
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # partial trailing line from an interrupted session
+                typ = rec.get("type")
+                if typ == "session_start":
+                    config = rec.get("config", {}) or {}
+                elif typ == "sample":
+                    t_mono.append(num(rec.get("t_mono")))
+                    body.append(num(rec.get("body_c")))
+                    ambient.append(num(rec.get("ambient_c")))
+                    lamp.append(bool(rec.get("lamp_cmd")))
+                    power.append(num(rec.get("power_w")))
+                    state.append(rec.get("state") or "")
+                    reason.append(rec.get("reason") or "")
+                    body_sp.append(num(rec.get("body_setpoint_c")))
+                    amb_sp.append(num(rec.get("ambient_setpoint_c")))
+
+        t0 = next((v for v in t_mono if v == v), 0.0)
+        t = [(v - t0) if v == v else float("nan") for v in t_mono]
+        return {
+            "path": path, "config": config, "t": t,
+            "body": body, "ambient": ambient, "lamp": lamp, "power": power,
+            "state": state, "reason": reason,
+            "body_sp": body_sp, "amb_sp": amb_sp,
+        }
+
+    @staticmethod
+    def _control_stats(rec: dict) -> str:
+        ctrl = (rec.get("config") or {}).get("control", {}) or {}
+        mode = ctrl.get("mode", "heat")
+        body_db = float(ctrl.get("body_deadband_c", 0.3) or 0.3)
+        amb_db = float(ctrl.get("ambient_deadband_c", 0.5) or 0.5)
+
+        def stat_line(name, arr, sp_arr, db):
+            pairs = [(v, s) for v, s in zip(arr, sp_arr) if v == v]
+            vals = [v for v, _ in pairs]
+            if not vals:
+                return None
+            n = len(vals)
+            m = sum(vals) / n
+            sd = (sum((v - m) ** 2 for v in vals) / n) ** 0.5
+            withsp = [(v, s) for v, s in pairs if s == s]
+            in_band = (100.0 * sum(1 for v, s in withsp if abs(v - s) <= db) / len(withsp)
+                       if withsp else None)
+            band_txt = f", {in_band:.0f}% within ±{db:g}°C of setpoint" if in_band is not None else ""
+            return (f"{name}: mean {m:.2f}°C, SD {sd:.2f}, range {min(vals):.2f}–{max(vals):.2f}"
+                    f"{band_txt}  (n={n})")
+
+        lines = [f"Mode: {mode}"]
+        for name, key, sp_key, db in (("Body", "body", "body_sp", body_db),
+                                       ("Ambient", "ambient", "amb_sp", amb_db)):
+            ln = stat_line(name, rec[key], rec[sp_key], db)
+            if ln:
+                lines.append(ln)
+
+        lamp = rec["lamp"]
+        t = [x for x in rec["t"] if x == x]
+        if lamp:
+            duty = 100.0 * sum(1 for x in lamp if x) / len(lamp)
+            dur = (t[-1] - t[0]) if len(t) >= 2 else 0.0
+            lines.append(f"Actuator ON {duty:.0f}% of the time over {dur:.0f}s "
+                         f"({len(lamp)} samples)")
+        # A LOCKOUT anywhere is worth flagging explicitly.
+        n_lockout = sum(1 for s in rec["state"] if s == "LOCKOUT")
+        if n_lockout:
+            lines.append(f"⚠ {n_lockout} sample(s) in LOCKOUT")
+        return "\n".join(lines)
+
+    def _render_review(self) -> None:
+        rec = self._review
+        if rec is None:
+            return
+        ax = self.review_ax
+        ax.clear()
+        t = rec["t"]
+        ax.plot(t, rec["body"], label="body", color="#2471a3", linewidth=1.4)
+        ax.plot(t, rec["ambient"], label="ambient", color="#c0392b", linewidth=1.4)
+        if any(s == s for s in rec["body_sp"]):
+            ax.plot(t, rec["body_sp"], color="#2471a3", linestyle="--",
+                    alpha=0.5, linewidth=1.0, label="body setpoint")
+        if any(s == s for s in rec["amb_sp"]):
+            ax.plot(t, rec["amb_sp"], color="#c0392b", linestyle="--",
+                    alpha=0.5, linewidth=1.0, label="ambient setpoint")
+
+        # Y range from the data, with padding; then shade actuator-ON bands.
+        vals = [v for v in (rec["body"] + rec["ambient"]) if v == v]
+        if vals:
+            lo, hi = min(vals), max(vals)
+            pad = max(0.5, (hi - lo) * 0.1)
+            ax.set_ylim(lo - pad, hi + pad)
+        ymin, ymax = ax.get_ylim()
+        ax.fill_between(t, ymin, ymax, where=rec["lamp"], step="mid",
+                        color=(1.0, 0.0, 0.0), alpha=0.12, linewidth=0,
+                        zorder=0, label="actuator ON")
+        ax.set_xlabel("time (s)")
+        ax.set_ylabel("temp (°C)")
+        ax.legend(loc="upper right", fontsize=8)
+        self._review_cursor = ax.axvline(t[0], color="0.4", linewidth=1, linestyle=":")
+        self.review_fig.tight_layout()
+        self._apply_review_xlim()   # honour the current zoom/pan selection
+
+    def _on_review_hover(self, event) -> None:
+        rec = self._review
+        if rec is None or event.inaxes is not self.review_ax or event.xdata is None:
+            return
+        t = rec["t"]
+        i = bisect.bisect_left(t, event.xdata)
+        if i <= 0:
+            i = 0
+        elif i >= len(t):
+            i = len(t) - 1
+        elif abs(t[i - 1] - event.xdata) <= abs(t[i] - event.xdata):
+            i = i - 1
+
+        def fmt(v):
+            return f"{v:.2f}" if v == v else "--"
+
+        b, a = rec["body"][i], rec["ambient"][i]
+        on = "ON " if rec["lamp"][i] else "off"
+        st = rec["state"][i]
+        self.lbl_review_readout.setText(
+            f"t={t[i]:6.0f}s   body={fmt(b)}°C   ambient={fmt(a)}°C   "
+            f"actuator={on}   state={st}")
+        if self._review_cursor is not None:
+            self._review_cursor.set_xdata([t[i], t[i]])
+            self.review_canvas.draw_idle()
+
+    def _on_review_window_changed(self, index: int) -> None:
+        self._review_window = self.combo_review_window.itemData(index)
+        # Panning only makes sense with a fixed window narrower than the file.
+        rec = self._review
+        can_pan = (rec is not None and self._review_window is not None
+                   and (rec["t"][-1] - rec["t"][0]) > self._review_window)
+        self.slider_review.setEnabled(can_pan)
+        self._apply_review_xlim()
+
+    def _on_review_pan(self, _value: int) -> None:
+        self._apply_review_xlim()
+
+    def _apply_review_xlim(self) -> None:
+        """Set the x-limits from the chosen window width + pan position. With
+        'All' (or a window wider than the recording) it just shows everything."""
+        rec = self._review
+        if rec is None or not rec["t"]:
+            return
+        t0, t1 = rec["t"][0], rec["t"][-1]
+        w = self._review_window
+        if w is None or (t1 - t0) <= w:
+            self.review_ax.set_xlim(t0, t1)
+        else:
+            span = (t1 - t0) - w
+            start = t0 + span * (self.slider_review.value() / REVIEW_PAN_STEPS)
+            self.review_ax.set_xlim(start, start + w)
+        self.review_canvas.draw_idle()
 
     # ---- safety bypass --------------------------------------------------------
 

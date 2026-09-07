@@ -16,14 +16,21 @@ from .config import SafetyConfig
 
 @dataclass(frozen=True)
 class Verdict:
+    # allow_heat is a historical name: it means "allow the actuator ON". In
+    # heat mode that is the lamp; in cool mode it is the Peltier. Either way a
+    # False here forces the actuator OFF -- this layer NEVER commands it on.
     allow_heat: bool
     reason: str
     latched: bool = False
 
 
 class SafetySupervisor:
-    def __init__(self, cfg: SafetyConfig):
+    def __init__(self, cfg: SafetyConfig, mode: str = "heat"):
+        # mode mirrors ControlConfig.mode. "heat" -> hard limits are ceilings;
+        # "cool" -> hard limits are floors. Wired from cfg.control.mode in
+        # main.run(); validate() guarantees the two agree.
         self.cfg = cfg
+        self.mode = mode
         self._latched = False
         self._latch_reason = ""
         self._latch_sticky = False
@@ -50,17 +57,30 @@ class SafetySupervisor:
         now = now if now is not None else time.monotonic()
         c = self.cfg
 
-        # 1. Hard ceilings -> latch.
-        if ambient is not None and ambient.value >= c.ambient_max_c:
-            return self._latch(
-                f"ambient {ambient.value:.2f}C >= hard max {c.ambient_max_c}C"
-            )
-        if body is not None and body.value >= c.body_max_c:
-            return self._latch(
-                f"body {body.value:.2f}C >= hard max {c.body_max_c}C"
-            )
+        # 1. Hard limits -> latch. Ceilings in heat mode, floors in cool mode.
+        if self.mode == "cool":
+            if ambient is not None and ambient.value <= c.ambient_min_c:
+                return self._latch(
+                    f"ambient {ambient.value:.2f}C <= hard min {c.ambient_min_c}C"
+                )
+            if body is not None and body.value <= c.body_min_c:
+                return self._latch(
+                    f"body {body.value:.2f}C <= hard min {c.body_min_c}C"
+                )
+        else:
+            if ambient is not None and ambient.value >= c.ambient_max_c:
+                return self._latch(
+                    f"ambient {ambient.value:.2f}C >= hard max {c.ambient_max_c}C"
+                )
+            if body is not None and body.value >= c.body_max_c:
+                return self._latch(
+                    f"body {body.value:.2f}C >= hard max {c.body_max_c}C"
+                )
 
-        # 2. Stuck-on detector -> latch. Dead bulb / mis-sited probe / stuck sensor.
+        # 2. Stuck-on detector -> latch. Applies in BOTH modes: an actuator
+        #    commanded ON far too long without reaching setpoint means a dead
+        #    element / mis-sited probe / stuck sensor -- runaway hot (heat) or
+        #    runaway cold (cool). Same mechanism, same sticky latch.
         if self.continuous_on_s(now) > c.max_continuous_on_s:
             return self._latch(
                 f"lamp ON continuously for {self.continuous_on_s(now):.0f}s "
@@ -102,7 +122,10 @@ class SafetySupervisor:
     def _can_release(
         self, body: Optional[Reading], ambient: Optional[Reading]
     ) -> bool:
-        """Release requires positive evidence we are cool, not absence of evidence."""
+        """Release requires positive evidence we are back inside the safe band,
+        not merely absence of evidence. Heat mode: evidence of COOLING (below
+        ceiling - hysteresis). Cool mode: evidence of WARMING (above floor +
+        hysteresis)."""
         if self._latch_sticky:
             return False  # requires operator reset_latch()
         c = self.cfg
@@ -110,11 +133,19 @@ class SafetySupervisor:
 
         if ambient is None:
             return False  # no fresh ambient -> stay latched
-        if ambient.value > c.ambient_max_c - h:
-            return False
-        if body is not None and body.value > c.body_max_c - h:
-            return False
-        return True
+
+        if self.mode == "cool":
+            if ambient.value < c.ambient_min_c + h:
+                return False
+            if body is not None and body.value < c.body_min_c + h:
+                return False
+            return True
+        else:
+            if ambient.value > c.ambient_max_c - h:
+                return False
+            if body is not None and body.value > c.body_max_c - h:
+                return False
+            return True
 
     @property
     def latched(self) -> bool:
