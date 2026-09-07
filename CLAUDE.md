@@ -198,7 +198,9 @@ test suite is the specification.
 
 Working: safety supervisor, controller, bus, watchdog, logger, zigpy layer,
 pairing helper, simulation mode, RFID adapter, **heat+cool modes**, **GUI
-Review tab**. 29/29 tests pass. Heat sim loop and RFID reader verified end to
+Review tab**, **start screen** (continue / new config / review-only),
+**review-only mode** (no hardware touched), **dockable Log panel**. 29/29
+tests pass. Heat sim loop and RFID reader verified end to
 end against real hardware; cool mode verified in simulation only (held box ~20°C
 around setpoint; floor LOCKOUT fires) — **not yet run on the real Peltier**.
 
@@ -225,6 +227,24 @@ COM port live in the gitignored `config.local.yaml`, not `config.yaml`.
    the Peltier running before assuming pulse is needed.
 5. Consider relabelling "Lamp"/"heat" wording in `gui.py`/`main.py` to the
    mode-neutral "actuator" (cosmetic; behaviour is already mode-correct).
+6. **PROPOSED (not started) — hardware registry + scenarios.** Split config
+   into two layers so multiple device brands can be mixed and scenarios pick
+   which hardware they use:
+   - **hardware.json** (per machine): a registry of devices by id, each with a
+     `type` + connection params, e.g. actuators `{sonoff_plug: {type:
+     zigbee_plug, ieee: ...}}`, sensors `{esp32_a: {type: esp32_hamsterpod,
+     port: COM6, probe: t1}, esp32_b: {type: <other-brand>, port: COM7}}`,
+     coordinator, rfid. The `type` selects the adapter via a
+     `type -> Plug/SensorSource` factory — **this is where a new ESP32 or plug
+     BRAND plugs in: add an adapter implementing the existing interface, keyed
+     by its type**. Different-brand plug = different `Plug` impl; different-brand
+     ESP32 = different `SensorSource`/parse.
+   - **scenario** (per experiment, e.g. "heat_up", "cool_down"): `mode`,
+     setpoints, safety limits, and references to the hardware ids it uses.
+   - The start screen would list scenarios to pick from; loader merges
+     hardware + scenario into the existing `Config`. Keep `Config.validate()`
+     crash-loud. This is a real refactor (config.py + an actuator/sensor
+     factory + tests) — design it as its own change, don't bolt it on.
 
 ## The ESP32 (hamsterpod) path
 
