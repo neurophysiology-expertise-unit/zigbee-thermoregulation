@@ -15,14 +15,21 @@ Sonoff SNZB-02 ───┘    (stale+range)     (veto)      (hysteresis)   (zig
 
 ## Install
 
+**Windows** — follow [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md). It covers
+drivers, COM ports, re-pairing, and the key pitfalls: use `py` (not `python`)
+to create the venv, run all commands in **PowerShell** (not Git Bash), and
+unblock venv activation with
+`Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`.
+
+**Linux / macOS:**
+
 ```bash
-pip install -r mouse_thermo/requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r mouse_thermo/requirements-gui.txt
 ```
 
-**On Windows** (drivers, COM ports, re-pairing when you move the rig), follow
-[INSTALL_WINDOWS.md](INSTALL_WINDOWS.md) instead — it covers the SONOFF
-ZBDongle-E / plug / SNZB-02, the URH-2 RFID reader, the ESP32 probe, and the
-related neu-suite repos.
+Use `requirements.txt` instead for a headless install (no GUI).
 
 Run all commands below from the repo root (the parent of `mouse_thermo/`) —
 the package uses relative imports, so entry points must be invoked as
