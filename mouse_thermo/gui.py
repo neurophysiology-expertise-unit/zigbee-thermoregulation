@@ -281,7 +281,7 @@ class MainWindow(QMainWindow):
             ("Body temp (C)", self.lbl_body),
             ("Ambient temp (C)", self.lbl_ambient),
             ("Raw RFID read (unvalidated)", self.lbl_raw_rfid),
-            ("Lamp state", self.lbl_lamp),
+            ("Actuator state", self.lbl_lamp),
             ("Power (W)", self.lbl_power),
             ("Plug link", self.lbl_plug_link),
             ("Ambient sensor link", self.lbl_ambient_link),
@@ -322,9 +322,9 @@ class MainWindow(QMainWindow):
 
         # Freerun sub-controls: manual lamp ON / OFF, plus Pulse.
         self.freerun_row = QHBoxLayout()
-        self.freerun_row.addWidget(QLabel("Freerun lamp:"))
-        self.btn_lamp_on = QPushButton("Lamp ON")
-        self.btn_lamp_off = QPushButton("Lamp OFF")
+        self.freerun_row.addWidget(QLabel("Freerun actuator:"))
+        self.btn_lamp_on = QPushButton("Actuator ON")
+        self.btn_lamp_off = QPushButton("Actuator OFF")
         self.btn_pulse = QPushButton("Pulse")
         self.btn_pulse.setCheckable(True)
         self.btn_lamp_on.clicked.connect(self._manual_lamp_on)

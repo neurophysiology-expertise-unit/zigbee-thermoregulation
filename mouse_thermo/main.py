@@ -497,7 +497,7 @@ async def run(
                 await plug.set_async(False)
                 slog.event("shutdown_lamp_off")
             except Exception as e:
-                log.critical("COULD NOT TURN LAMP OFF: %r -- CHECK THE RIG NOW", e)
+                log.critical("COULD NOT TURN ACTUATOR OFF: %r -- CHECK THE RIG NOW", e)
                 slog.event("shutdown_lamp_off_FAILED", error=repr(e))
             plug.close()
         if app is not None:
