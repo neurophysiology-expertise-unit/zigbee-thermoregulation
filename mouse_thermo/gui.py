@@ -41,9 +41,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QDockWidget,
+
     QMainWindow,
-    QPlainTextEdit,
+
     QPushButton,
     QSlider,
     QTabWidget,
@@ -75,28 +75,6 @@ REVIEW_WINDOW_OPTIONS = (("4 s", 4.0), ("10 s", 10.0), ("30 s", 30.0),
                          ("60 s", 60.0), ("2 min", 120.0), ("All", None))
 REVIEW_PAN_STEPS = 1000  # slider resolution: permille of the pannable span
 
-
-class LogBridge(QObject):
-    """Carries a formatted log line from any thread to the GUI thread. A plain
-    Signal(str) with the default (auto) connection is queued when emitted from a
-    non-GUI thread -- which is exactly what the control loop and sensor threads
-    do -- so the text widget is only ever touched on the GUI thread."""
-    message = Signal(str)
-
-
-class QtLogHandler(logging.Handler):
-    """A logging handler that funnels records to the in-window Log panel via a
-    LogBridge signal. Never touches Qt widgets directly (see LogBridge)."""
-    def __init__(self, bridge: "LogBridge"):
-        super().__init__()
-        self._bridge = bridge
-
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            msg = self.format(record)
-        except Exception:  # a broken format string must never crash logging
-            return
-        self._bridge.message.emit(msg)
 
 
 class MainWindow(QMainWindow):
@@ -339,12 +317,12 @@ class MainWindow(QMainWindow):
         gt_row = QHBoxLayout()
         gt_row.addWidget(QLabel("Closed-loop regulates on:"))
         self.combo_ground_truth = QComboBox()
-        # Ambient is the ONLY closed-loop ground truth: the lamp's EMI blinds
-        # the body/RFID reader during heating, so body is not a trustworthy
-        # continuous regulation source on this rig. (Safety still checks the
-        # body hard-ceiling independently -- this only limits what the
-        # controller pursues, per the ground_truth invariant.)
+        # Safety always checks BOTH readings regardless of which source is
+        # selected here (ground_truth invariant). Body requires pulse mode on
+        # heat rigs -- lamp EMI blinds the RFID reader during continuous heat;
+        # the reader recovers in the OFF gaps of each pulse cycle.
         self.combo_ground_truth.addItem("Ambient", userData="ambient")
+        self.combo_ground_truth.addItem("Body (RFID)", userData="body")
         self.combo_ground_truth.currentIndexChanged.connect(self._on_ground_truth_changed)
         gt_row.addWidget(self.combo_ground_truth)
         mode_v.addLayout(gt_row)
@@ -511,53 +489,6 @@ class MainWindow(QMainWindow):
         monitor_v.addWidget(self.canvas, 1)   # plot takes all remaining space
 
         self._build_review_tab(review_v)
-        self._build_log_dock()
-
-    # ---- log dock (verbose output alongside the GUI) -------------------------
-
-    def _build_log_dock(self) -> None:
-        """A dockable Log panel that mirrors the terminal output inside the
-        window, so you can watch verbose logs while the GUI runs. Fed by a
-        thread-safe logging handler on the root logger, so control-loop and
-        sensor-thread messages show up too."""
-        dock = QDockWidget("Log", self)
-        dock.setAllowedAreas(Qt.BottomDockWidgetArea | Qt.RightDockWidgetArea)
-        panel = QWidget()
-        pv = QVBoxLayout(panel)
-        pv.setContentsMargins(4, 4, 4, 4)
-
-        row = QHBoxLayout()
-        self.chk_verbose = QCheckBox("Verbose (DEBUG)")
-        self.chk_verbose.toggled.connect(self._on_verbose_toggled)
-        row.addWidget(self.chk_verbose)
-        row.addStretch(1)
-        btn_clear = QPushButton("Clear")
-        btn_clear.clicked.connect(lambda: self.log_view.clear())
-        row.addWidget(btn_clear)
-        pv.addLayout(row)
-
-        self.log_view = QPlainTextEdit()
-        self.log_view.setReadOnly(True)
-        self.log_view.setMaximumBlockCount(5000)  # cap memory; drops oldest lines
-        self.log_view.setStyleSheet("font-family: Consolas, monospace; font-size: 11px;")
-        pv.addWidget(self.log_view)
-
-        dock.setWidget(panel)
-        self.addDockWidget(Qt.BottomDockWidgetArea, dock)
-
-        self._log_bridge = LogBridge()
-        self._log_bridge.message.connect(self.log_view.appendPlainText)
-        handler = QtLogHandler(self._log_bridge)
-        handler.setFormatter(logging.Formatter(
-            "%(asctime)s %(levelname)-7s %(name)s: %(message)s", "%H:%M:%S"))
-        logging.getLogger().addHandler(handler)
-        self._log_handler = handler
-
-    def _on_verbose_toggled(self, checked: bool) -> None:
-        # Root level gates both the console and this panel. DEBUG pulls in
-        # zigpy/bellows chatter too -- useful when a device misbehaves, noisy
-        # otherwise, hence off by default.
-        logging.getLogger().setLevel(logging.DEBUG if checked else logging.INFO)
 
     # ---- review tab (read-only, post-recording) ------------------------------
 
