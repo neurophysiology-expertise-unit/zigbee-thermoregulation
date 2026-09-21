@@ -237,6 +237,11 @@ Review tab**, **start screen** (continue / new config / review-only),
 **hardware registry + scenarios**. 38/38 tests pass. Heat sim loop and RFID reader verified end to
 end against real hardware; cool mode verified in simulation only (held box ~20°C
 around setpoint; floor LOCKOUT fires) — **not yet run on the real Peltier**.
+The 2026-09-21 pilot (MH002) drove the real Peltier but in **heat** mode, with the
+30 C plausibility floor, so cool mode itself has still never run on hardware.
+`scenarios/cool_brain.yaml` is the corrected brain-cooling protocol (cool mode,
+regulates on the skull chip, floor 28 C with the valid range below it); select
+**Ground truth: Body (RFID)** in the GUI when running it.
 
 Windows bring-up (drivers, COM ports, re-pairing) is documented in
 `INSTALL_WINDOWS.md`.

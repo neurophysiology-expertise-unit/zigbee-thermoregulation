@@ -113,3 +113,20 @@ def test_full_scenario_via_config_load(tmp_path):
     assert cfg.zigbee.plug_ieee == "aa:bb"
     assert cfg.esp32.enabled is True and cfg.esp32.role == "ambient"
     assert cfg.control.mode == "cool"
+
+
+def test_shipped_cool_brain_scenario_is_valid_and_reads_the_chip(tmp_path):
+    """The brain-cooling scenario a live animal runs under must load, regulate
+    in cool mode on the RFID chip, and keep a sub-floor reading visible to
+    safety -- the pilot's 30 C plausibility floor hid its whole cooling run."""
+    import os
+    import shutil
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    (tmp_path / "scenarios").mkdir()
+    shutil.copy(os.path.join(repo, "scenarios", "cool_brain.yaml"), tmp_path / "scenarios")
+    shutil.copy(os.path.join(repo, "hardware.example.json"), tmp_path / "hardware.local.json")
+
+    cfg = Config.load(str(tmp_path / "scenarios" / "cool_brain.yaml"))
+    assert cfg.control.mode == "cool"
+    assert cfg.rfid.enabled is True, "the chip must be wired in, or there is no brain reading"
+    assert cfg.sensors.body_valid_range[0] < cfg.safety.body_min_c < cfg.control.body_setpoint_c

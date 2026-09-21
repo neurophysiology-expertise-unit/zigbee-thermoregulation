@@ -1,0 +1,52 @@
+# Scenario: closed-loop BRAIN cooling with the head-bar Peltier, regulated on the
+# skull-mounted RFID chip. Written from the 2026-09-21 MH002 pilot, which ran by
+# mistake in heat mode with the 30 C plausibility floor -- the chip read
+# 30.2 -> 29.5 C, the software discarded every reading below 30, and nothing
+# stopped the Peltier at a target. This file is that run done correctly.
+#
+# In the GUI after loading it:
+#   - Mode: Auto
+#   - Ground truth: "Body (RFID)"  -- the chip. Ground truth is a GUI choice, not
+#     a config key; left on "Ambient" the loop regulates the box instead.
+#   - Auto pulse: the pilot ran pulsed (5 s on / 1 s off) and the reader kept
+#     reading under the Peltier; open-work item 4 (is pulse needed for a DC
+#     Peltier at all?) is still open.
+hardware_file: ../hardware.local.json
+actuator: sonoff_plug          # the plug switching the USB Peltier's supply
+ambient_sensor: esp32_east     # box air, ESP32 probe t1
+body_sensor: urh2_reader       # the skull chip = brain temperature
+
+control:
+  mode: cool
+  # Target 29.5 C, the pilot's end point. Cool mode: Peltier ON above
+  # setpoint + deadband (29.7), OFF below setpoint - deadband (29.3), and holds
+  # its last command in between. The chip reports in 0.1 C steps.
+  body_setpoint_c: 29.5
+  body_deadband_c: 0.2
+  # Box FLOOR in cool mode: the Peltier is refused while box air is at/below
+  # 19.5 C, whatever the brain reads. The pilot box sat at ~24 C.
+  ambient_setpoint_c: 20.0
+  ambient_deadband_c: 0.5
+  loop_period_s: 5.0
+  min_on_s: 30.0
+  min_off_s: 30.0
+  pulse_on_s: 5.0              # as in the pilot
+  pulse_off_s: 1.0
+
+safety:
+  # Hard FLOORS -> latched lockout, Peltier OFF until an operator resets.
+  # Enforced only in cool mode; in heat mode (the pilot) body_min_c is ignored.
+  body_min_c: 28.0             # 1.5 C below target, the same margin the
+                               # hyperthermia protocol keeps above its target
+  ambient_min_c: 15.0
+  lockout_release_hysteresis_c: 1.0
+  max_continuous_on_s: 900.0   # stuck-ON Peltier -> runaway cold; latches
+  watchdog_timeout_s: 30.0
+
+sensors:
+  # The LOW end must sit below body_min_c, or a floor breach is thrown away as
+  # "implausible" before safety sees it -- exactly what hid the pilot's cooling.
+  body_valid_range: [24.0, 43.0]
+  ambient_valid_range: [5.0, 60.0]
+  body_stale_after_s: 30.0     # chip silent 30 s -> no brain reading -> OFF
+  ambient_stale_after_s: 300.0

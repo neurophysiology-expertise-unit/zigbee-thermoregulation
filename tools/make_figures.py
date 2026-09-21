@@ -201,9 +201,10 @@ def fig_schematic() -> None:
     ax2.spines[["top", "right"]].set_visible(False)
 
     fig.text(0.69, 0.33, "Control rule (cool mode)", fontsize=8.5, weight="bold")
-    fig.text(0.69, 0.13,
+    fig.text(0.69, 0.10,
              "T > setpoint + deadband  →  Peltier ON\n"
-             "T ≤ setpoint             →  Peltier OFF\n"
+             "T < setpoint − deadband  →  Peltier OFF\n"
+             "in between               →  hold last command\n"
              "T ≤ safety floor / stale →  OFF (lockout)\n"
              "   (safety can only veto, never switch ON)",
              fontsize=7.6, family="monospace", linespacing=1.6)
