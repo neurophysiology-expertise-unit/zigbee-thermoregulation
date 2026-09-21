@@ -55,6 +55,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
 from .config import Config
+from . import recordings
 from .main import SessionHandle, run
 from .neucams import NeucamsClient
 
@@ -582,91 +583,16 @@ class MainWindow(QMainWindow):
         self.slider_review.setEnabled(False)
         self._render_review()
 
+    # Parsing and the stats block live in recordings.py, so the analysis
+    # machine can read the same files without importing Qt. These stay as
+    # thin delegates because the Review tab calls them by name.
     @staticmethod
     def _parse_recording(path: str) -> dict:
-        """Read a session/recording .jsonl into column arrays. Tolerant of
-        missing keys (older files) and of a truncated last line (a session
-        killed mid-write) -- those are skipped, never fatal."""
-        config: dict = {}
-        t_mono, body, ambient, lamp, power = [], [], [], [], []
-        state, reason, body_sp, amb_sp = [], [], [], []
-
-        def num(x):
-            return float(x) if isinstance(x, (int, float)) else float("nan")
-
-        with open(path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # partial trailing line from an interrupted session
-                typ = rec.get("type")
-                if typ == "session_start":
-                    config = rec.get("config", {}) or {}
-                elif typ == "sample":
-                    t_mono.append(num(rec.get("t_mono")))
-                    body.append(num(rec.get("body_c")))
-                    ambient.append(num(rec.get("ambient_c")))
-                    lamp.append(bool(rec.get("lamp_cmd")))
-                    power.append(num(rec.get("power_w")))
-                    state.append(rec.get("state") or "")
-                    reason.append(rec.get("reason") or "")
-                    body_sp.append(num(rec.get("body_setpoint_c")))
-                    amb_sp.append(num(rec.get("ambient_setpoint_c")))
-
-        t0 = next((v for v in t_mono if v == v), 0.0)
-        t = [(v - t0) if v == v else float("nan") for v in t_mono]
-        return {
-            "path": path, "config": config, "t": t,
-            "body": body, "ambient": ambient, "lamp": lamp, "power": power,
-            "state": state, "reason": reason,
-            "body_sp": body_sp, "amb_sp": amb_sp,
-        }
+        return recordings.parse(path)
 
     @staticmethod
     def _control_stats(rec: dict) -> str:
-        ctrl = (rec.get("config") or {}).get("control", {}) or {}
-        mode = ctrl.get("mode", "heat")
-        body_db = float(ctrl.get("body_deadband_c", 0.3) or 0.3)
-        amb_db = float(ctrl.get("ambient_deadband_c", 0.5) or 0.5)
-
-        def stat_line(name, arr, sp_arr, db):
-            pairs = [(v, s) for v, s in zip(arr, sp_arr) if v == v]
-            vals = [v for v, _ in pairs]
-            if not vals:
-                return None
-            n = len(vals)
-            m = sum(vals) / n
-            sd = (sum((v - m) ** 2 for v in vals) / n) ** 0.5
-            withsp = [(v, s) for v, s in pairs if s == s]
-            in_band = (100.0 * sum(1 for v, s in withsp if abs(v - s) <= db) / len(withsp)
-                       if withsp else None)
-            band_txt = f", {in_band:.0f}% within ±{db:g}°C of setpoint" if in_band is not None else ""
-            return (f"{name}: mean {m:.2f}°C, SD {sd:.2f}, range {min(vals):.2f}–{max(vals):.2f}"
-                    f"{band_txt}  (n={n})")
-
-        lines = [f"Mode: {mode}"]
-        for name, key, sp_key, db in (("Body", "body", "body_sp", body_db),
-                                       ("Ambient", "ambient", "amb_sp", amb_db)):
-            ln = stat_line(name, rec[key], rec[sp_key], db)
-            if ln:
-                lines.append(ln)
-
-        lamp = rec["lamp"]
-        t = [x for x in rec["t"] if x == x]
-        if lamp:
-            duty = 100.0 * sum(1 for x in lamp if x) / len(lamp)
-            dur = (t[-1] - t[0]) if len(t) >= 2 else 0.0
-            lines.append(f"Actuator ON {duty:.0f}% of the time over {dur:.0f}s "
-                         f"({len(lamp)} samples)")
-        # A LOCKOUT anywhere is worth flagging explicitly.
-        n_lockout = sum(1 for s in rec["state"] if s == "LOCKOUT")
-        if n_lockout:
-            lines.append(f"⚠ {n_lockout} sample(s) in LOCKOUT")
-        return "\n".join(lines)
+        return recordings.control_stats_text(rec)
 
     def _render_review(self) -> None:
         rec = self._review

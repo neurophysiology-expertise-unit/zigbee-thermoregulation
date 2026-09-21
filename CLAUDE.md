@@ -5,6 +5,11 @@ Context for Claude Code working in this repository. Read before making changes.
 ## What this is
 
 Closed-loop heat-lamp control for mouse thermoregulation experiments.
+
+The paper this rig feeds is `neubrain/projects/zigbee-thermoregulation/` in the
+neubrain vault, which records this repo as its `code_repo`. Manuscript text,
+literature and results stay there; control code stays here.
+
 **A live animal sits under the lamp this code controls.** Bugs here can cook a
 mouse. Treat safety-relevant changes with the caution that implies.
 
@@ -48,6 +53,7 @@ Sonoff SNZB-02 ───┘    (stale+range)     (veto)      (hysteresis)   (zig
 | `sensors/rfid_chip.py` | Adapter for the UID Devices URH-2 reader (AnyCage protocol) |
 | `sensors/esp32_serial.py` | Adapter for the hamsterpod ESP32-S2/ESP-NOW gateway (binary frames) |
 | `hardware.py` | Hardware registry + scenario resolution (device id → config blocks) |
+| `recordings.py` | Read-only: parses recordings, per-session metrics, CSV, plots |
 | `gui.py` | PySide6 live monitor + manual override + read-only Review tab, runs `main.run()` in-process |
 
 `gui.py` is not a separate tool -- only one process can hold the Zigbee
@@ -172,8 +178,36 @@ recording…** parses a session/recording `.jsonl` into the whole time series
 body/ambient/actuator/state at any instant, with control-quality stats
 (mean/SD/range, % time within deadband of setpoint, actuator duty, LOCKOUT
 count). A **Window** combo (4 s … All) zooms and a **Pan** slider scrolls the
-zoom window across the recording. Parser (`_parse_recording`) is tolerant of a
-truncated final line (interrupted session) and missing keys (older files).
+zoom window across the recording. The parser and the stats block now live in
+`recordings.py`; `_parse_recording` / `_control_stats` are thin delegates, so
+the GUI and the analysis machine cannot disagree about what a recording says.
+Tolerant of a truncated final line (interrupted session) and missing keys
+(older files).
+
+## Recording analysis (`recordings.py`) — rig numbers → manuscript numbers
+
+Headless and stdlib-only (matplotlib imported lazily, only for `--plots`), so
+it runs on the analysis machine without Qt, zigpy or a serial port:
+
+```bash
+python -m mouse_thermo.recordings <file-or-dir>... [--csv sessions.csv] [--plots figs/]
+```
+
+`parse()` → column arrays (shared with the Review tab). `summarize()` → one
+flat row per session: duration, setpoints, mean/SD/min/max per source, **%
+within deadband**, **time to first in band**, actuator duty and transition
+count, LOCKOUT/FALLBACK episode counts, and the **body dropout split by
+actuator state** with median `raw_rfid_age_s` on vs off — the EMI finding
+above, as numbers a paper can print. `--csv` writes one row per session, which
+is what makes baseline-vs-closed-loop comparable across sessions.
+
+Two deliberate choices: a metric with no data reports `None`, never `0` (a
+baseline session regulates nothing — "0% in band" would be a lie about a
+measurement that was never made), and `lockout_episodes` counts *entries into*
+LOCKOUT, not samples spent there. Tests: `test_recordings.py` (6).
+
+Figure *code* lives here, in `tools/make_figures.py`; the figures it writes (and
+any results) go to the vault project's `draft/figs/`, not into this repo.
 
 ## Before any change to safety.py / controller.py / bus.py
 
