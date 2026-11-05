@@ -143,6 +143,7 @@ class SessionHandle:
     last_decision: Optional[Decision] = None
     ambient_sensor: Optional[object] = None  # ZigbeeSensorListener, for last_seen_age(); None if unconfigured/simulated
     rfid_source: Optional[object] = None  # RfidChipSource, for last_raw_reading; None if rfid.enabled is False
+    tc_source: Optional[object] = None   # ThermocoupleSource; None if not enabled
 
     def request_shutdown(self) -> None:
         """Safe to call from any thread."""
@@ -233,6 +234,15 @@ async def run(
                 raise ValueError(f"esp32.role must be ambient|body, got {cfg.esp32.role}")
             esp32_source = Esp32Source(cfg.esp32, target)
             sources.append(esp32_source)
+        tc_source = None
+        if cfg.thermocouple.enabled:
+            from .sensors.thermocouple_serial import ThermocoupleSource
+            target = {"ambient": amb_ch, "body": body_ch}.get(cfg.thermocouple.role)
+            if target is None:
+                raise ValueError(
+                    f"thermocouple.role must be ambient|body, got {cfg.thermocouple.role!r}")
+            tc_source = ThermocoupleSource(cfg.thermocouple, target)
+            sources.append(tc_source)
         for s in sources:
             s.start()
 
@@ -301,7 +311,8 @@ async def run(
         last_cmd_sent_t = -1e9  # forces a command on the very first tick
 
         handle = SessionHandle(loop=loop, stop=stop, body_ch=body_ch, amb_ch=amb_ch, plug=plug, cfg=cfg,
-                                ambient_sensor=ambient_listener, rfid_source=rfid_source)
+                                ambient_sensor=ambient_listener, rfid_source=rfid_source,
+                                tc_source=tc_source)
         if on_ready is not None:
             on_ready(handle)
 

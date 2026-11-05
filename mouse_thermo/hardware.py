@@ -42,6 +42,9 @@ SENSOR_TYPES: Dict[str, dict] = {
                   "optional": {"baudrate": 38400, "transponder_id": ""}},
     # Sonoff SNZB-02 ambient sensor over Zigbee -> ZigbeeSensorListener.
     "snzb02_zigbee": {"required": ("ieee",), "optional": {"endpoint": 1}},
+    # Raspberry Pi Pico + MAX31856 thermocouple reader -> ThermocoupleSource.
+    "thermocouple_serial": {"required": ("port",),
+                            "optional": {"baudrate": 115200, "role": "body"}},
 }
 
 
@@ -177,5 +180,10 @@ def _apply_sensor(cfg, spec: DeviceSpec, role: str) -> None:
         cfg.rfid.port = spec.params["port"]
         cfg.rfid.baudrate = _param(spec, "baudrate", SENSOR_TYPES)
         cfg.rfid.transponder_id = _param(spec, "transponder_id", SENSOR_TYPES)
+    elif spec.type == "thermocouple_serial":
+        cfg.thermocouple.enabled = True
+        cfg.thermocouple.port = spec.params["port"]
+        cfg.thermocouple.baudrate = _param(spec, "baudrate", SENSOR_TYPES)
+        cfg.thermocouple.role = role
     else:  # unreachable; validate() rejects unknown types first
         raise ValueError(f"sensor type {spec.type!r} has no wiring yet")

@@ -37,6 +37,11 @@
       "type": "urh2_rfid",
       "port": "COM5",
       "baudrate": 38400
+    },
+    "tc_probe": {
+      "type": "thermocouple_serial",
+      "port": "COM7",
+      "baudrate": 115200
     }
   }
 }

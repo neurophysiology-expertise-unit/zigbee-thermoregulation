@@ -255,6 +255,22 @@ def test_cool_config_rejects_setpoint_below_floor():
         cfg.validate()
 
 
+# ---- body-only (thermocouple) scenario: no ambient sensor ----------------
+
+def test_body_only_stale_gives_lockout_not_fallback_no_exception():
+    """Cool mode, ground_truth=body, body goes stale, NO ambient sensor.
+    Must turn the Peltier OFF (LOCKOUT), not try FALLBACK (which would
+    raise because there is also no ambient to fall back on)."""
+    sup, ctrl = mk_cool()
+    # body present -> cooling correctly
+    d = ctrl.step(R(33.0), None, ground_truth="body")
+    assert d.lamp_on is True and d.state is State.NORMAL
+    # body disappears (thermocouple disconnected) -> LOCKOUT, Peltier OFF
+    d = ctrl.step(None, None, ground_truth="body")
+    assert d.lamp_on is False and d.state is State.LOCKOUT
+    assert d.latched is False   # not a hard-floor breach; self-corrects on reconnect
+
+
 def test_cool_config_requires_valid_range_below_floor():
     cfg = Config(simulate=True)
     cfg.control.mode = "cool"

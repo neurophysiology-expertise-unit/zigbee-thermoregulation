@@ -113,6 +113,14 @@ class Esp32Config:
 
 
 @dataclass
+class ThermocoupleConfig:
+    enabled: bool = False
+    port: str = "COM7"
+    baudrate: int = 115200
+    role: str = "body"              # "body" | "ambient" | "log_only"
+
+
+@dataclass
 class NeucamsConfig:
     # UDP trigger to the neucams camera software. When a recording starts, send
     # the run name + `start`; on stop send `stop`, so cameras acquire in sync
@@ -130,6 +138,7 @@ class Config:
     zigbee: ZigbeeConfig = field(default_factory=ZigbeeConfig)
     rfid: RfidConfig = field(default_factory=RfidConfig)
     esp32: Esp32Config = field(default_factory=Esp32Config)
+    thermocouple: ThermocoupleConfig = field(default_factory=ThermocoupleConfig)
     neucams: NeucamsConfig = field(default_factory=NeucamsConfig)
     log_path: str = "session.jsonl"
     # Default folder the GUI proposes for recordings (operator can still change
@@ -213,6 +222,11 @@ class Config:
             if self.esp32.role not in ("ambient", "body", "log_only"):
                 raise ValueError(
                     f"esp32.role must be ambient|body|log_only, got {self.esp32.role!r}")
+        if self.thermocouple.enabled:
+            if self.thermocouple.role not in ("ambient", "body", "log_only"):
+                raise ValueError(
+                    f"thermocouple.role must be ambient|body|log_only, "
+                    f"got {self.thermocouple.role!r}")
         if self.neucams.enabled:
             if not self.neucams.host:
                 raise ValueError("neucams.host required when neucams.enabled")
@@ -243,6 +257,7 @@ class Config:
             zigbee=sub(ZigbeeConfig, "zigbee"),
             rfid=sub(RfidConfig, "rfid"),
             esp32=sub(Esp32Config, "esp32"),
+            thermocouple=sub(ThermocoupleConfig, "thermocouple"),
             neucams=sub(NeucamsConfig, "neucams"),
             log_path=raw.get("log_path", "session.jsonl"),
             recordings_dir=raw.get("recordings_dir", "recordings"),

@@ -1,0 +1,38 @@
+# Scenario: closed-loop brain cooling, thermocouple body only, NO ambient sensor.
+# Use this when the ESP32 hamsterpod is unavailable or as a fallback.
+#
+# WARNING: without an ambient sensor the box-air floor (ambient_min_c) is NOT
+# enforced -- the channel is permanently stale so the ambient limit can never
+# fire. The only active guards are body_min_c (28 C), max_continuous_on_s,
+# and the hardware watchdog. Someone must stay at the rig for the entire run.
+#
+# When body goes stale (thermocouple disconnected, firmware fault, etc.) the
+# controller cannot fall back to ambient (there is none), so it enters LOCKOUT
+# and turns the Peltier OFF -- the correct fail-cold behaviour.
+hardware_file: ../hardware.local.json
+actuator: sonoff_plug
+# No ambient_sensor -- the ambient channel stays permanently stale.
+body_sensor: tc_probe
+
+control:
+  mode: cool
+  body_setpoint_c: 29.5
+  body_deadband_c: 0.3
+  ambient_setpoint_c: 20.0    # required by validate(); not used (no ambient sensor)
+  ambient_deadband_c: 0.5
+  loop_period_s: 5.0
+  min_on_s: 30.0
+  min_off_s: 30.0
+
+safety:
+  ambient_min_c: 15.0         # required by validate(); won't fire (ambient always stale)
+  body_min_c: 28.0
+  lockout_release_hysteresis_c: 1.0
+  max_continuous_on_s: 900.0
+  watchdog_timeout_s: 30.0
+
+sensors:
+  body_stale_after_s: 5.0
+  body_valid_range: [24.0, 42.0]
+  ambient_stale_after_s: 300.0
+  ambient_valid_range: [5.0, 60.0]

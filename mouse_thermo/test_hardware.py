@@ -113,3 +113,54 @@ def test_full_scenario_via_config_load(tmp_path):
     assert cfg.zigbee.plug_ieee == "aa:bb"
     assert cfg.esp32.enabled is True and cfg.esp32.role == "ambient"
     assert cfg.control.mode == "cool"
+
+
+def reg_dict_with_tc():
+    """Registry dict that includes a thermocouple_serial sensor."""
+    d = reg_dict()
+    d["sensors"]["tc_probe"] = {"type": "thermocouple_serial", "port": "COM7"}
+    return d
+
+
+def test_thermocouple_type_resolves():
+    reg = HardwareRegistry.from_dict(reg_dict_with_tc())
+    cfg = Config(simulate=True)
+    cfg.actuator = "plug_a"
+    cfg.body_sensor = "tc_probe"
+    apply(reg, cfg)
+    assert cfg.thermocouple.enabled is True
+    assert cfg.thermocouple.port == "COM7"
+    assert cfg.thermocouple.role == "body"
+
+
+def test_thermocouple_missing_port_rejected():
+    d = reg_dict_with_tc()
+    d["sensors"]["tc_noport"] = {"type": "thermocouple_serial"}  # no port
+    with pytest.raises(ValueError, match="missing required"):
+        HardwareRegistry.from_dict(d)
+
+
+def test_noambient_scenario_loads(tmp_path):
+    """A scenario with no ambient_sensor must load and validate without error."""
+    reg = reg_dict_with_tc()
+    # Also need a plug and the thermocouple in the registry.
+    (tmp_path / "hardware.json").write_text(json.dumps(reg))
+    (tmp_path / "noambient.yaml").write_text(
+        "hardware_file: hardware.json\n"
+        "actuator: plug_a\n"
+        "body_sensor: tc_probe\n"
+        "control:\n"
+        "  mode: cool\n"
+        "  body_setpoint_c: 29.5\n"
+        "  ambient_setpoint_c: 20.0\n"
+        "safety:\n"
+        "  body_min_c: 28.0\n"
+        "  ambient_min_c: 15.0\n"
+        "sensors:\n"
+        "  body_valid_range: [24.0, 42.0]\n"
+        "  ambient_valid_range: [5.0, 60.0]\n"
+    )
+    cfg = Config.load(str(tmp_path / "noambient.yaml"))
+    assert cfg.thermocouple.enabled is True
+    assert cfg.ambient_sensor is None   # no ambient sensor reference
+    assert cfg.esp32.enabled is False   # ESP32 not referenced

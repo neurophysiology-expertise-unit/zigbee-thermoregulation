@@ -199,10 +199,11 @@ test suite is the specification.
 Working: safety supervisor, controller, bus, watchdog, logger, zigpy layer,
 pairing helper, simulation mode, RFID adapter, **heat+cool modes**, **GUI
 Review tab**, **start screen** (continue / new config / review-only),
-**review-only mode** (no hardware touched), **dockable Log panel**,
-**hardware registry + scenarios**. 38/38 tests pass. Heat sim loop and RFID reader verified end to
-end against real hardware; cool mode verified in simulation only (held box ~20°C
-around setpoint; floor LOCKOUT fires) — **not yet run on the real Peltier**.
+**review-only mode** (no hardware touched), **hardware registry + scenarios**,
+**thermocouple (Pico/MAX31856) body sensor** (`thermocouple_serial` type,
+`sensors/thermocouple_serial.py`). 68/68 tests pass. Heat sim loop and RFID
+reader verified end to end against real hardware; cool mode verified in
+simulation only — **not yet run on the real Peltier**.
 
 Windows bring-up (drivers, COM ports, re-pairing) is documented in
 `INSTALL_WINDOWS.md`.
@@ -217,14 +218,17 @@ COM port live in the gitignored `config.local.yaml`, not `config.yaml`.
    (adapter -> ambient channel ~22.9C). See the ESP32 section below.
 2. Tune `ambient_setpoint_c` / `body_setpoint_c` against the real box.
 3. **Cooling rig on a 2nd Windows PC.** New brain 36→32 °C protocol with a USB
-   Peltier on the headbar (see "Cool mode" above). To do on the new machine:
-   install per `INSTALL_WINDOWS.md`, re-pair the Zigbee devices, write a
-   `config.local.yaml` with `control.mode: cool` + floors + a valid range whose
-   low end sits below the floor, then dry-run cool mode before an animal.
-4. **Re-test RFID EMI with the Peltier.** The pulse/"chopped lamp" feature was
-   specific to the heat lamp's EMI blinding the reader; a DC Peltier may not,
-   in which case pulse is unnecessary for cooling. Check `raw_rfid_age_s` with
-   the Peltier running before assuming pulse is needed.
+   Peltier on the headbar (see "Cool mode" above). Use scenario
+   `scenarios/cool_brain_thermocouple.yaml` (with ESP32 ambient) or
+   `cool_brain_thermocouple_noambient.yaml` (body only). Fill
+   `hardware.local.json` with the real plug IEEE + thermocouple COM port
+   (find it in Device Manager as a "USB Serial Device"; the Pico also mounts a
+   `CIRCUITPY` drive — do NOT edit files on it). Re-pair Zigbee devices if on
+   a fresh machine.
+4. DONE — thermocouple (Pico/MAX31856) adapter complete. Pulse mode is OFF for
+   the thermocouple scenario — a DC Peltier generates no RF interference.
+   Verify EMI empirically if an RFID reader is later added alongside the
+   Peltier; check `raw_rfid_age_s` with the Peltier running.
 5. Consider relabelling "Lamp"/"heat" wording in `gui.py`/`main.py` to the
    mode-neutral "actuator" (cosmetic; behaviour is already mode-correct).
 6. **DONE (Phase 1) — hardware registry + scenarios.** See `hardware.py`.
@@ -232,7 +236,7 @@ COM port live in the gitignored `config.local.yaml`, not `config.yaml`.
      `hardware.example.json`): a registry of devices by id, each with a `type`
      + connection params — `coordinator`, `actuators`, `sensors`. Known types
      live in `ACTUATOR_TYPES` / `SENSOR_TYPES` (`zigbee_plug`,
-     `esp32_hamsterpod`, `urh2_rfid`, `snzb02_zigbee`), each with required +
+     `esp32_hamsterpod`, `urh2_rfid`, `snzb02_zigbee`, `thermocouple_serial`), each with required +
      optional params. `HardwareRegistry.load()` validates and **crashes loudly**
      on an unknown type or missing param.
    - **scenarios/*.yaml** (per experiment, e.g. `heat_up`, `cool_down`): the

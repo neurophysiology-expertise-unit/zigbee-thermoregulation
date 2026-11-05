@@ -322,7 +322,7 @@ class MainWindow(QMainWindow):
         # heat rigs -- lamp EMI blinds the RFID reader during continuous heat;
         # the reader recovers in the OFF gaps of each pulse cycle.
         self.combo_ground_truth.addItem("Ambient", userData="ambient")
-        self.combo_ground_truth.addItem("Body (RFID)", userData="body")
+        self.combo_ground_truth.addItem("Body", userData="body")
         self.combo_ground_truth.currentIndexChanged.connect(self._on_ground_truth_changed)
         gt_row.addWidget(self.combo_ground_truth)
         mode_v.addLayout(gt_row)
@@ -1101,7 +1101,13 @@ class MainWindow(QMainWindow):
         body_display_value: Optional[float] = None
         if body is not None:
             body_display_value = body.value
-            self.lbl_body.setText(f"{body.value:.2f}")
+            tc_meta = ""
+            if body.meta:
+                board_c = body.meta.get("board_c")
+                tc_status = body.meta.get("tc_status")
+                if board_c is not None:
+                    tc_meta = f"  [board {board_c:.1f}°C, {tc_status}]"
+            self.lbl_body.setText(f"{body.value:.2f}{tc_meta}")
             self.lbl_body.setStyleSheet("")
         elif raw is not None:
             # Not what the safety system is acting on -- body_ch already
